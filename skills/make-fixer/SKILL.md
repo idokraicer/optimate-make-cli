@@ -8,18 +8,50 @@ user-invocable: true
 
 You can fetch, edit, validate, and push Make.com scenario blueprints using the `make-fixer` CLI.
 
+## Installation
+
+Before first use, check if `make-fixer` is available by running `make-fixer --version`. If the command is not found, install it:
+
+```bash
+git clone https://github.com/idokraicer/make-fixer.git ~/.make-fixer
+cd ~/.make-fixer && bun install && bun link
+```
+
+This registers the `make-fixer` command globally. Requires [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`).
+
+## Setup
+
+The API token is stored globally at `~/.make-fixer/.env` and works from any directory.
+
+To configure, run: `make-fixer login --token <YOUR_TOKEN>`
+
+**IMPORTANT:** Always use `--token <token>` flag. Do NOT run bare `make-fixer login` — the interactive prompt does not work inside Claude Code.
+
+Optionally set a custom base URL: `make-fixer login --token <token> --base-url https://us1.make.com` (default: `https://eu1.make.com`). Running login again updates the existing token.
+
+If a command fails with "MAKE_API_TOKEN not found", ask the user for their token and run `make-fixer login --token <token>`.
+
 ## Workflow
 
-1. **Fetch** the blueprint: `make-fixer fetch -s <SCENARIO_ID>`
-   - Saves to `.make-fixer/<id>.json`
-   - Prints module summary with IDs and types
-2. **Read** the JSON file and understand the scenario
-3. **Analyze** for issues: `make-fixer analyze -s <id> --local`
-4. **Edit** the `.make-fixer/<id>.json` file directly using your Edit tool
-5. **Validate** changes: `make-fixer validate -s <id>`
-   - Shows diff vs remote (added/removed/modified modules, issue count)
-6. **Push** when ready: `make-fixer push -s <id>`
-   - Always ask the user for confirmation before pushing
+When the user provides a scenario ID or URL, immediately run these steps without waiting:
+
+1. **Fetch and analyze in one go:**
+   ```bash
+   make-fixer fetch -s <ID> && make-fixer analyze -s <ID> --local
+   ```
+   This saves the blueprint to `blueprints/<id>.json` and prints issues.
+
+2. **Read** the blueprint file to understand the scenario: `blueprints/<id>.json`
+
+3. **Edit** the file directly using your Edit tool
+
+4. **Validate** changes: `make-fixer validate -s <id>`
+   Shows diff vs remote (added/removed/modified modules, issue count)
+
+5. **Push** when ready: `make-fixer push -s <id> --yes`
+   Always ask the user for confirmation before pushing
+
+**To extract a scenario ID from a Make.com URL:** the ID is the number after `/scenarios/` — e.g. `https://eu1.make.com/303722/scenarios/4227637/edit` → scenario ID is `4227637`.
 
 ## Blueprint Structure
 

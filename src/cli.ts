@@ -11,7 +11,9 @@ import { diffBlueprints } from "./agent/blueprint-editor";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 
-const MAKE_FIXER_DIR = ".make-fixer";
+const BLUEPRINTS_DIR = "blueprints";
+const GLOBAL_CONFIG_DIR = `${process.env.HOME}/.make-fixer`;
+const GLOBAL_ENV_PATH = `${GLOBAL_CONFIG_DIR}/.env`;
 
 const program = new Command();
 
@@ -20,19 +22,54 @@ program
   .description("Analyze and auto-fix Make.com scenario blueprints")
   .version("0.1.0");
 
+// --- login command ---
+program
+  .command("login")
+  .description("Save your Make.com API token to ~/.make-fixer/.env")
+  .option("--token <token>", "API token (will prompt if not provided)")
+  .option("--base-url <url>", "Make.com base URL (default: https://eu1.make.com)")
+  .action(async (opts) => {
+    let token = opts.token;
+
+    if (!token) {
+      process.stdout.write("Enter your Make.com API token: ");
+      token = await new Promise<string>((resolve) => {
+        process.stdin.once("data", (data) => resolve(data.toString().trim()));
+        process.stdin.resume();
+      });
+    }
+
+    if (!token) {
+      console.error("Error: No token provided.");
+      process.exit(1);
+    }
+
+    await ensureDir(GLOBAL_CONFIG_DIR);
+    const envFile = Bun.file(GLOBAL_ENV_PATH);
+    let content = (await envFile.exists()) ? await envFile.text() : "";
+
+    content = setEnvVar(content, "MAKE_API_TOKEN", token);
+    if (opts.baseUrl) {
+      content = setEnvVar(content, "MAKE_BASE_URL", opts.baseUrl);
+    }
+
+    await Bun.write(GLOBAL_ENV_PATH, content);
+    console.log(`Saved API token to ${GLOBAL_ENV_PATH}`);
+  });
+
 // --- fetch command ---
 program
   .command("fetch")
   .description("Fetch a scenario blueprint and save it locally for editing")
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
   .action(async (opts) => {
-    const client = createClient();
+    const client = await createClient();
     console.log(`Fetching scenario ${opts.scenario}...`);
 
     const { blueprint } = await client.fetchBlueprint(opts.scenario);
 
-    await ensureDir(MAKE_FIXER_DIR);
-    const filePath = `${MAKE_FIXER_DIR}/${opts.scenario}.json`;
+    await ensureDir(BLUEPRINTS_DIR);
+    const filePath = `${BLUEPRINTS_DIR}/${opts.scenario}.json`;
     await Bun.write(filePath, JSON.stringify(blueprint, null, 2));
 
     console.log(`Saved to ${filePath}`);
@@ -55,7 +92,7 @@ program
     if (opts.local) {
       blueprint = await readLocalBlueprint(opts.scenario);
     } else {
-      const client = createClient();
+      const client = await createClient();
       console.log(`Fetching scenario ${opts.scenario}...`);
       const fetched = await client.fetchBlueprint(opts.scenario);
       blueprint = fetched.blueprint;
@@ -84,7 +121,7 @@ program
   .option("--only <types>", "Only fix these issue types (comma-separated)")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
-    const client = createClient();
+    const client = await createClient();
     console.log(`Fetching scenario ${opts.scenario}...`);
 
     const { blueprint } = await client.fetchBlueprint(opts.scenario);
@@ -142,7 +179,7 @@ program
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
   .option("--json", "Output as JSON")
   .action(async (opts) => {
-    const client = createClient();
+    const client = await createClient();
     const local = await readLocalBlueprint(opts.scenario);
 
     console.log(`Fetching remote scenario ${opts.scenario}...`);
@@ -184,7 +221,7 @@ program
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
   .option("--yes", "Skip confirmation prompt")
   .action(async (opts) => {
-    const client = createClient();
+    const client = await createClient();
     const local = await readLocalBlueprint(opts.scenario);
 
     if (!opts.yes) {
@@ -210,13 +247,34 @@ program
 
 // --- helpers ---
 
-function createClient(): MakeApiClient {
-  const token = process.env.MAKE_API_TOKEN;
-  const baseUrl = process.env.MAKE_BASE_URL || "https://eu1.make.com";
+function setEnvVar(content: string, key: string, value: string): string {
+  const pattern = new RegExp(`^${key}=.*$`, "m");
+  const line = `${key}=${value}`;
+  if (pattern.test(content)) {
+    return content.replace(pattern, line);
+  }
+  return content + (content.length > 0 && !content.endsWith("\n") ? "\n" : "") + line + "\n";
+}
+
+async function loadGlobalEnv(): Promise<Record<string, string>> {
+  const file = Bun.file(GLOBAL_ENV_PATH);
+  if (!(await file.exists())) return {};
+  const vars: Record<string, string> = {};
+  for (const line of (await file.text()).split("\n")) {
+    const match = line.match(/^([A-Z_]+)=(.*)$/);
+    if (match) vars[match[1]] = match[2];
+  }
+  return vars;
+}
+
+async function createClient(): Promise<MakeApiClient> {
+  const globalEnv = await loadGlobalEnv();
+  const token = process.env.MAKE_API_TOKEN || globalEnv.MAKE_API_TOKEN;
+  const baseUrl = process.env.MAKE_BASE_URL || globalEnv.MAKE_BASE_URL || "https://eu1.make.com";
 
   if (!token) {
-    console.error("Error: MAKE_API_TOKEN environment variable is required.");
-    console.error("Set it in .env or export it: export MAKE_API_TOKEN=your_token");
+    console.error("Error: MAKE_API_TOKEN not found.");
+    console.error("Run: make-fixer login --token <your-token>");
     process.exit(1);
   }
 
@@ -229,7 +287,7 @@ async function ensureDir(dir: string): Promise<void> {
 }
 
 async function readLocalBlueprint(scenarioId: number): Promise<Blueprint> {
-  const filePath = `${MAKE_FIXER_DIR}/${scenarioId}.json`;
+  const filePath = `${BLUEPRINTS_DIR}/${scenarioId}.json`;
   const file = Bun.file(filePath);
 
   if (!(await file.exists())) {
