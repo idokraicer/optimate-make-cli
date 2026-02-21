@@ -1,3 +1,10 @@
+export interface BlueprintEdit {
+  path: string;
+  action?: "set" | "insert" | "remove";
+  value?: any;
+  index?: number;
+}
+
 export interface PathResult {
   parent: any;
   key: string | number;
@@ -55,4 +62,42 @@ export function parsePath(path: string): (string | number)[] {
   }
 
   return segments;
+}
+
+export function applyEdits<T>(obj: T, edits: BlueprintEdit[]): T {
+  const clone: T = JSON.parse(JSON.stringify(obj));
+
+  for (const edit of edits) {
+    const action = edit.action ?? "set";
+
+    if (action === "set") {
+      if (edit.value === undefined) {
+        throw new Error(`"set" action requires a value (path: "${edit.path}")`);
+      }
+      const { parent, key } = resolvePath(clone, edit.path);
+      parent[key] = edit.value;
+    } else if (action === "insert") {
+      if (edit.value === undefined) {
+        throw new Error(`"insert" action requires a value (path: "${edit.path}")`);
+      }
+      const { parent, key } = resolvePath(clone, edit.path);
+      const arr = parent[key];
+      if (!Array.isArray(arr)) {
+        throw new Error(`"insert" target at "${edit.path}" is not an array`);
+      }
+      const idx = edit.index ?? arr.length;
+      arr.splice(idx, 0, edit.value);
+    } else if (action === "remove") {
+      const { parent, key } = resolvePath(clone, edit.path);
+      if (Array.isArray(parent) && typeof key === "number") {
+        parent.splice(key, 1);
+      } else {
+        delete parent[key];
+      }
+    } else {
+      throw new Error(`Unknown action: "${action}"`);
+    }
+  }
+
+  return clone;
 }
