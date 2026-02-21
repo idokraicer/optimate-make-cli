@@ -30,7 +30,8 @@ function findLongLists(obj: unknown, path = ""): { path: string; count: number; 
 export function checkHardcodedData(classified: ClassifiedModule[]): Issue[] {
   const issues: Issue[] = [];
 
-  for (const { module } of classified) {
+  for (const { module, classification } of classified) {
+    if (classification === "excluded") continue;
     const sources = [module.filter, module.mapper].filter(Boolean);
     for (const source of sources) {
       const findings = findLongLists(source);

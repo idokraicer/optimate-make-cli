@@ -1,12 +1,23 @@
 import type { ClassifiedModule, Issue, Note } from "../../make-api/types";
 import { translateModuleType } from "../../utils/module-helpers";
 
-const REQUIRES_DOCUMENTATION_PREFIXES = ["http:", "manychat:"];
 const HEBREW_REGEX = /[\u0590-\u05FF]/;
 const MIN_DOC_LENGTH = 15;
 
-function requiresDocumentation(moduleType: string, _classification: string): boolean {
-  if (REQUIRES_DOCUMENTATION_PREFIXES.some((p) => moduleType.startsWith(p))) return true;
+/**
+ * Documentation is REQUIRED for modules where purpose isn't self-evident:
+ * - http: modules (generic endpoints — what API? what data?)
+ * - Webhook triggers (what external system sends data here?)
+ * - Modules with opaque/complex behavior that needs explanation
+ *
+ * Documentation is RECOMMENDED (optional) for:
+ * - Standard API modules (powerlink, monday, gmail, etc.)
+ *
+ * NEVER required for excluded/utility modules.
+ */
+function requiresDocumentation(moduleType: string, classification: string): boolean {
+  if (moduleType.startsWith("http:")) return true;
+  if (classification === "trigger" && moduleType.startsWith("gateway:")) return true;
   return false;
 }
 
@@ -24,6 +35,17 @@ function isValidDocumentation(content: string): boolean {
 export function checkDocumentation(classified: ClassifiedModule[], notes: Note[]): Issue[] {
   const issues: Issue[] = [];
 
+  if (notes.length === 0) {
+    issues.push({
+      moduleId: null,
+      moduleType: null,
+      category: "documentation",
+      severity: "warning",
+      message: "לתרחיש אין הערות תיעוד כלל. יש להוסיף הערות (Notes) המתארות את מטרת התרחיש, לוגיקה עסקית, ותלויות חיצוניות",
+      autoFixable: false,
+    });
+  }
+
   const noteContentByModuleId = new Map<number, string>();
   for (const note of notes) {
     for (const moduleId of note.moduleIds) {
@@ -32,10 +54,12 @@ export function checkDocumentation(classified: ClassifiedModule[], notes: Note[]
   }
 
   for (const { module, classification } of classified) {
-    if (!requiresDocumentation(module.module, classification)) continue;
+    if (classification === "excluded") continue;
 
     const content = noteContentByModuleId.get(module.id);
-    if (!content || !isValidDocumentation(content)) {
+    const isRequired = requiresDocumentation(module.module, classification);
+
+    if (isRequired && (!content || !isValidDocumentation(content))) {
       const label = translateModuleType(module.module);
       issues.push({
         moduleId: module.id,

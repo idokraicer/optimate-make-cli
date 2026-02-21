@@ -46,7 +46,7 @@ export function analyze(
   const checklist = {
     hasErrorHandling: !issues.some((i) => i.category === "error-handling"),
     hasProperModuleNames: !issues.some((i) => i.category === "naming"),
-    hasNotes: !issues.some((i) => i.category === "documentation"),
+    hasNotes: notes.length > 0,
   };
 
   return { classified, issues, checklist };

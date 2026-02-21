@@ -7,24 +7,24 @@ export const ModuleMetadataDesignerSchema = z.object({
   y: z.number().optional(),
   name: z.string().optional(),
   messages: z.array(z.any()).optional(),
-}).passthrough();
+}).catchall(z.unknown());
 
 export const ModuleMetadataSchema = z.object({
   designer: ModuleMetadataDesignerSchema.optional(),
   parameters: z.array(z.any()).optional(),
   expect: z.array(z.any()).optional(),
-}).passthrough();
+}).catchall(z.unknown());
 
 export const FilterConditionSchema = z.object({
   a: z.any().optional(),
   b: z.any().optional(),
   o: z.string().optional(),
-}).passthrough();
+}).catchall(z.unknown());
 
 export const FilterSchema = z.object({
   name: z.string().optional(),
   conditions: z.any().optional(),
-}).passthrough();
+}).catchall(z.unknown());
 
 export const ErrorHandlerSchema: z.ZodType<any> = z.object({
   id: z.number(),
@@ -33,7 +33,7 @@ export const ErrorHandlerSchema: z.ZodType<any> = z.object({
   parameters: z.any().optional(),
   mapper: z.any().optional(),
   metadata: ModuleMetadataSchema.optional(),
-}).passthrough();
+}).catchall(z.unknown());
 
 export const ModuleSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
@@ -47,29 +47,29 @@ export const ModuleSchema: z.ZodType<any> = z.lazy(() =>
     filter: FilterSchema.nullable().optional(),
     onerror: z.array(ErrorHandlerSchema).nullable().optional(),
     routes: z.array(RouteSchema).nullable().optional(),
-  }).passthrough()
+  }).catchall(z.unknown())
 );
 
 export const RouteSchema = z.object({
   flow: z.array(ModuleSchema).optional(),
-}).passthrough();
+}).catchall(z.unknown());
 
 export const BlueprintSchedulingSchema = z.object({
   type: z.string().optional(),
   interval: z.number().optional(),
-}).passthrough();
+}).catchall(z.unknown());
 
 export const BlueprintMetadataSchema = z.object({
   instant: z.boolean().optional(),
   version: z.number().optional(),
-}).passthrough();
+}).catchall(z.unknown());
 
 export const BlueprintSchema = z.object({
   name: z.string(),
   flow: z.array(ModuleSchema),
   metadata: BlueprintMetadataSchema.optional(),
   scheduling: BlueprintSchedulingSchema.optional(),
-}).passthrough();
+}).catchall(z.unknown());
 
 // --- Inferred types ---
 

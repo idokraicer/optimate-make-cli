@@ -15,11 +15,11 @@ export class MakeApiClient {
   }
 
   getBlueprintUrl(scenarioId: number): string {
-    return `${this.baseUrl}/scenarios/${scenarioId}/blueprint`;
+    return `${this.baseUrl}/api/v2/scenarios/${scenarioId}/blueprint`;
   }
 
   getScenarioUrl(scenarioId: number): string {
-    return `${this.baseUrl}/scenarios/${scenarioId}`;
+    return `${this.baseUrl}/api/v2/scenarios/${scenarioId}`;
   }
 
   private headers(): Record<string, string> {
@@ -68,9 +68,24 @@ export class MakeApiClient {
     }
   }
 
+  async createNote(scenarioId: number, moduleIds: number[], content: string): Promise<Note> {
+    const res = await fetch(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ moduleIds, content }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Make API create note error ${res.status}: ${await res.text()}`);
+    }
+
+    const data = await res.json();
+    return data.note;
+  }
+
   async fetchNotes(scenarioId: number): Promise<Note[]> {
     try {
-      const res = await fetch(`${this.baseUrl}/scenarios/${scenarioId}/notes`, {
+      const res = await fetch(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`, {
         headers: this.headers(),
       });
       if (!res.ok) return [];

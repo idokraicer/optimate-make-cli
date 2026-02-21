@@ -94,7 +94,7 @@ program
 
 function createClient(): MakeApiClient {
   const token = process.env.MAKE_API_TOKEN;
-  const baseUrl = process.env.MAKE_BASE_URL || "https://eu1.make.com/api/v2";
+  const baseUrl = process.env.MAKE_BASE_URL || "https://eu1.make.com";
 
   if (!token) {
     console.error("Error: MAKE_API_TOKEN environment variable is required.");
