@@ -1,0 +1,70 @@
+{
+  "name": "Sync",
+  "flow": [
+    {
+      "id": 1,
+      "module": "gateway:CustomWebHook",
+      "version": 1,
+      "metadata": { "designer": { "x": 0, "y": 0 } }
+    },
+    {
+      "id": 2,
+      "module": "json:ParseJSON",
+      "version": 1,
+      "metadata": { "designer": { "x": 150, "y": 0 } }
+    },
+    {
+      "id": 3,
+      "module": "builtin:Router",
+      "version": 1,
+      "metadata": { "designer": { "x": 300, "y": 0 } },
+      "routes": [
+        {
+          "flow": [
+            {
+              "id": 5,
+              "module": "powerlink:plquery",
+              "version": 1,
+              "mapper": { "query": "{{1.email}}" },
+              "metadata": { "designer": { "x": 600, "y": -150 } },
+              "onerror": null
+            },
+            {
+              "id": 6,
+              "module": "powerlink:createObject",
+              "version": 1,
+              "mapper": {},
+              "metadata": { "designer": { "x": 900, "y": -150 } },
+              "onerror": null
+            }
+          ]
+        },
+        {
+          "flow": [
+            {
+              "id": 7,
+              "module": "http:ActionSendData",
+              "version": 1,
+              "mapper": {
+                "url": "https://api.example.com/webhook",
+                "body": "{\"name\": \"{{1.name}}\", \"phone\": \"{{1.phone}}\"}"
+              },
+              "metadata": { "designer": { "x": 600, "y": 150 } },
+              "onerror": null
+            },
+            {
+              "id": 8,
+              "module": "gmail:sendEmail",
+              "version": 1,
+              "mapper": { "to": "admin@example.com" },
+              "metadata": { "designer": { "x": 900, "y": 150 } },
+              "onerror": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": { "instant": true },
+  "scheduling": { "type": "immediately" }
+}

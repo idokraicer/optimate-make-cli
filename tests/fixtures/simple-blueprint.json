@@ -1,0 +1,44 @@
+{
+  "name": "Test Scenario",
+  "flow": [
+    {
+      "id": 1,
+      "module": "gateway:CustomWebHook",
+      "version": 1,
+      "metadata": {
+        "designer": { "x": 0, "y": 0 }
+      }
+    },
+    {
+      "id": 2,
+      "module": "powerlink:plquery",
+      "version": 1,
+      "mapper": {
+        "query": "{{1.phone}}"
+      },
+      "metadata": {
+        "designer": { "x": 300, "y": 0 }
+      },
+      "onerror": null
+    },
+    {
+      "id": 3,
+      "module": "powerlink:updateObject",
+      "version": 1,
+      "mapper": {},
+      "metadata": {
+        "designer": { "x": 600, "y": 0, "name": "Update Contact" }
+      },
+      "onerror": [
+        {
+          "id": 4,
+          "module": "builtin:Break",
+          "version": 1,
+          "mapper": { "retry": true, "count": 3, "interval": 60 }
+        }
+      ]
+    }
+  ],
+  "metadata": { "instant": true },
+  "scheduling": { "type": "immediately" }
+}
