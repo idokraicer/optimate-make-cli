@@ -6,14 +6,34 @@ import simpleBlueprint from "../tests/fixtures/simple-blueprint.json";
 import type { Blueprint } from "./make-api/types";
 
 describe("CLI commands", () => {
-  test("CLI has agent command", async () => {
-    const proc = Bun.spawn(["bun", "src/cli.ts", "agent", "--help"], {
+  test("CLI has fetch command", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "fetch", "--help"], {
       stdout: "pipe",
       stderr: "pipe",
     });
     const stdout = await new Response(proc.stdout).text();
     expect(stdout).toContain("--scenario");
-    expect(stdout).toContain("interactive AI agent");
+    expect(stdout).toContain("Fetch a scenario blueprint");
+  });
+
+  test("CLI has validate command", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "validate", "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).toContain("--scenario");
+    expect(stdout).toContain("Compare local blueprint");
+  });
+
+  test("CLI has push command", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "push", "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).toContain("--scenario");
+    expect(stdout).toContain("Push a local blueprint");
   });
 });
 
