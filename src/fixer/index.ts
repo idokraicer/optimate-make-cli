@@ -153,7 +153,7 @@ function applyToModuleInFlow(
     if (Array.isArray(mod.routes)) {
       return {
         ...mod,
-        routes: mod.routes.map((route) => ({
+        routes: mod.routes.map((route: any) => ({
           ...route,
           flow: route.flow
             ? applyToModuleInFlow(route.flow, moduleId, transform)
