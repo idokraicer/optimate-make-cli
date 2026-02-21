@@ -98,6 +98,9 @@ export function applyEdits<T>(obj: T, edits: BlueprintEdit[]): T {
         throw new Error(`"insert" target at "${edit.path}" is not an array`);
       }
       const idx = edit.index ?? arr.length;
+      if (idx < 0 || idx > arr.length) {
+        throw new Error(`Insert index ${idx} out of bounds for array at "${edit.path}" (length: ${arr.length})`);
+      }
       arr.splice(idx, 0, edit.value);
     } else if (action === "remove") {
       const { parent, key } = resolvePath(clone, edit.path);

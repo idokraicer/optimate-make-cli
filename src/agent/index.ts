@@ -51,10 +51,11 @@ export function buildInitialMessages(
 function readLine(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     process.stdout.write(prompt);
+    process.stdin.resume();
     process.stdin.once("data", (data) => {
       resolve(data.toString().trim());
     });
-    process.stdin.resume();
+    process.stdin.once("end", () => resolve("exit"));
   });
 }
 
@@ -100,13 +101,21 @@ export async function runAgent(config: AgentConfig): Promise<void> {
     // Agent turn loop (may need multiple rounds for tool calls)
     let continueLoop = true;
     while (continueLoop) {
-      const response = await anthropic.messages.create({
-        model: MODEL,
-        max_tokens: 4096,
-        system: systemPrompt,
-        tools: toolDefinitions,
-        messages,
-      });
+      let response;
+      try {
+        response = await anthropic.messages.create({
+          model: MODEL,
+          max_tokens: 4096,
+          system: systemPrompt,
+          tools: toolDefinitions,
+          messages,
+        });
+      } catch (err: any) {
+        console.error(`\nAPI error: ${err.message}`);
+        // Remove the last user message so the conversation can continue
+        messages.pop();
+        break;
+      }
 
       const { textParts, toolCalls } = processAssistantResponse(response.content);
 
