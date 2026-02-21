@@ -1,13 +1,15 @@
 import type { Blueprint, Issue, Module } from "../make-api/types";
 import { addErrorHandler } from "./fixes/add-error-handler";
+import { addExistenceFilter } from "./fixes/add-existence-filter";
 import { setModuleName } from "./fixes/set-module-name";
 import { renameScenario } from "./fixes/rename-scenario";
+import { findUnsafeWebhookVars } from "../analyzer/checks/data-validation";
 import { generateModuleName, generateScenarioName } from "./ai-content";
 import { getMaxModuleId } from "../utils/module-helpers";
 import { walkModules } from "../utils/blueprint-traversal";
 
 export interface FixChange {
-  type: "error-handler" | "naming" | "scenario-naming";
+  type: "error-handler" | "naming" | "scenario-naming" | "data-validation";
   moduleId: number | null;
   description: string;
 }
@@ -51,6 +53,26 @@ export async function applyFixes(
           description: `Added Break error handler to module ${issue.moduleId}`,
         });
         return result;
+      });
+    }
+  }
+
+  // --- Data Validation Fixes ---
+  if (shouldApply("data-validation")) {
+    const dataIssues = issues.filter(
+      (i) => i.category === "data-validation" && i.autoFixable
+    );
+    for (const issue of dataIssues) {
+      fixed = applyToModule(fixed, issue.moduleId!, (mod) => {
+        const unsafeVars = findUnsafeWebhookVars(mod.mapper);
+        if (unsafeVars.length === 0) return mod;
+        const varList = unsafeVars.map((v) => `{{${v}}}`).join(", ");
+        changes.push({
+          type: "data-validation",
+          moduleId: issue.moduleId,
+          description: `Added existence filter for ${varList} on module ${issue.moduleId}`,
+        });
+        return addExistenceFilter(mod, unsafeVars);
       });
     }
   }

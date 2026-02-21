@@ -1,4 +1,4 @@
-import type { Issue } from "../make-api/types";
+import type { DataFlowMap, Issue } from "../make-api/types";
 import type { FixChange } from "../fixer/index";
 
 interface Checklist {
@@ -10,7 +10,8 @@ interface Checklist {
 export function formatReport(
   changes: FixChange[],
   remainingIssues: Issue[],
-  checklist: Checklist
+  checklist: Checklist,
+  dataFlow?: DataFlowMap
 ): string {
   const lines: string[] = [];
 
@@ -61,7 +62,25 @@ export function formatReport(
     lines.push("");
   }
 
-  if (changes.length === 0 && remainingIssues.length === 0) {
+  if (dataFlow && dataFlow.entries.length > 0) {
+    lines.push("Data Flow:");
+    for (const entry of dataFlow.entries) {
+      const sourceIds = [...new Set(entry.usages.map((u) => u.sourceModuleId))];
+      const chainParts: string[] = [];
+      for (const srcId of sourceIds) {
+        const consumers = entry.usages.filter((u) => u.sourceModuleId === srcId);
+        const parts = [`#${srcId}:${entry.varName}`];
+        for (const c of consumers) {
+          parts.push(`#${c.moduleId}:${c.field}`);
+        }
+        chainParts.push(parts.join(" -> "));
+      }
+      lines.push(`  ${entry.varName}: ${chainParts.join(", ")}`);
+    }
+    lines.push("");
+  }
+
+  if (changes.length === 0 && remainingIssues.length === 0 && (!dataFlow || dataFlow.entries.length === 0)) {
     lines.push("No issues found — great work! ✓");
   }
 
@@ -71,7 +90,12 @@ export function formatReport(
 export function formatJson(
   changes: FixChange[],
   remainingIssues: Issue[],
-  checklist: Checklist
+  checklist: Checklist,
+  dataFlow?: DataFlowMap
 ): string {
-  return JSON.stringify({ changes, remainingIssues, checklist }, null, 2);
+  return JSON.stringify(
+    { changes, remainingIssues, checklist, ...(dataFlow ? { dataFlow: dataFlow.entries } : {}) },
+    null,
+    2
+  );
 }

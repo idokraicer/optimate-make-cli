@@ -121,3 +121,21 @@ export interface ClassifiedModule {
   classification: ModuleClassification;
   path: string; // e.g. "flow[0]" or "flow[0].routes[1].flow[2]"
 }
+
+// --- Data Flow types ---
+
+export interface VariableUsage {
+  moduleId: number;
+  field: string;
+  sourceModuleId: number;
+  varName: string;
+}
+
+export interface DataFlowEntry {
+  varName: string;
+  usages: VariableUsage[];
+}
+
+export interface DataFlowMap {
+  entries: DataFlowEntry[];
+}

@@ -27,6 +27,34 @@ describe("applyFixes", () => {
     expect(result.changes).toHaveLength(1);
   });
 
+  test("adds existence filter for data-validation issues", async () => {
+    const blueprint: Blueprint = {
+      name: "test",
+      flow: [
+        { id: 1, module: "gateway:CustomWebHook" },
+        { id: 2, module: "powerlink:plquery", mapper: { query: "{{1.phone}}" }, onerror: [{ id: 3, module: "builtin:Break" }] },
+      ],
+    } as any;
+    const { issues } = analyze(blueprint, []);
+    const dataIssues = issues.filter(
+      (i) => i.category === "data-validation" && i.autoFixable
+    );
+    expect(dataIssues).toHaveLength(1);
+
+    const result = await applyFixes(blueprint, dataIssues, {
+      skipAi: true,
+      only: ["data-validation"],
+    });
+
+    const mod2 = result.fixed.flow.find((m) => m.id === 2);
+    expect(mod2?.filter).toBeDefined();
+    expect(mod2?.filter?.conditions[0]).toEqual([
+      { a: "{{1.phone}}", o: "exist" },
+    ]);
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0].type).toBe("data-validation");
+  });
+
   test("returns empty changes when no auto-fixable issues", async () => {
     const blueprint: Blueprint = {
       name: "Good Scenario Name: Webhook -> Fireberry -> Gmail Notification",

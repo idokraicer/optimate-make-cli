@@ -1,5 +1,6 @@
-import type { Blueprint, ClassifiedModule, Issue, Note } from "../make-api/types";
+import type { Blueprint, ClassifiedModule, DataFlowMap, Issue, Note } from "../make-api/types";
 import { classifyModules } from "./module-classifier";
+import { buildDataFlow } from "./checks/data-flow";
 import { checkErrorHandling } from "./checks/error-handling";
 import { checkNaming } from "./checks/naming";
 import { checkScenarioNaming } from "./checks/scenario-naming";
@@ -20,6 +21,7 @@ export interface AnalysisResult {
     hasProperModuleNames: boolean;
     hasNotes: boolean;
   };
+  dataFlow: DataFlowMap;
 }
 
 export function analyze(
@@ -44,10 +46,12 @@ export function analyze(
   ];
 
   const checklist = {
-    hasErrorHandling: !issues.some((i) => i.category === "error-handling"),
+    hasErrorHandling: !issues.some((i) => i.category === "error-handling" && i.severity !== "info"),
     hasProperModuleNames: !issues.some((i) => i.category === "naming"),
     hasNotes: notes.length > 0,
   };
 
-  return { classified, issues, checklist };
+  const dataFlow = buildDataFlow(classified);
+
+  return { classified, issues, checklist, dataFlow };
 }

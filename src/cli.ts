@@ -3,6 +3,7 @@
 import { Command } from "commander";
 import { MakeApiClient } from "./make-api/client";
 import { analyze } from "./analyzer/index";
+import { filterDataFlow } from "./analyzer/checks/data-flow";
 import { applyFixes } from "./fixer/index";
 import { formatReport, formatJson } from "./reporter/index";
 
@@ -18,6 +19,7 @@ program
   .description("Analyze a scenario for quality issues (no changes made)")
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
   .option("--json", "Output as JSON instead of formatted report")
+  .option("--var <name>", "Filter data flow to a specific variable name")
   .action(async (opts) => {
     const client = createClient();
     console.log(`Fetching scenario ${opts.scenario}...`);
@@ -26,10 +28,14 @@ program
     const notes = await client.fetchNotes(opts.scenario);
     const result = analyze(blueprint, notes);
 
+    const dataFlow = opts.var
+      ? filterDataFlow(result.dataFlow, opts.var)
+      : result.dataFlow;
+
     if (opts.json) {
-      console.log(formatJson([], result.issues, result.checklist));
+      console.log(formatJson([], result.issues, result.checklist, dataFlow));
     } else {
-      console.log(formatReport([], result.issues, result.checklist));
+      console.log(formatReport([], result.issues, result.checklist, dataFlow));
     }
   });
 
@@ -66,7 +72,7 @@ program
     const only = opts.only?.split(",");
     const { fixed, changes } = await applyFixes(blueprint, autoFixable, { only });
 
-    console.log(formatReport(changes, reportOnly, result.checklist));
+    console.log(formatReport(changes, reportOnly, result.checklist, result.dataFlow));
 
     if (opts.dryRun) {
       console.log("\n--dry-run: No changes pushed to Make.com.");
