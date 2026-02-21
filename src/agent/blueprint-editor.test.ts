@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolvePath, applyEdits, type BlueprintEdit } from "./blueprint-editor";
+import { resolvePath, applyEdits, diffBlueprints, type BlueprintEdit, type BlueprintDiff } from "./blueprint-editor";
 
 describe("resolvePath", () => {
   const obj = {
@@ -129,5 +129,45 @@ describe("applyEdits", () => {
     expect(() =>
       applyEdits(bp, [{ path: "flow", action: "insert" }])
     ).toThrow();
+  });
+});
+
+describe("diffBlueprints", () => {
+  test("detects added modules", () => {
+    const original = { name: "Test", flow: [{ id: 1, module: "a" }] };
+    const modified = { name: "Test", flow: [{ id: 1, module: "a" }, { id: 2, module: "b" }] };
+    const diff = diffBlueprints(original as any, modified as any);
+    expect(diff.modulesAdded).toEqual([2]);
+    expect(diff.modulesRemoved).toEqual([]);
+    expect(diff.idsPreserved).toBe(true);
+  });
+
+  test("detects removed modules", () => {
+    const original = { name: "Test", flow: [{ id: 1, module: "a" }, { id: 2, module: "b" }] };
+    const modified = { name: "Test", flow: [{ id: 1, module: "a" }] };
+    const diff = diffBlueprints(original as any, modified as any);
+    expect(diff.modulesRemoved).toEqual([2]);
+    expect(diff.idsPreserved).toBe(false);
+  });
+
+  test("detects modified modules", () => {
+    const original = { name: "Test", flow: [{ id: 1, module: "a", mapper: { x: 1 } }] };
+    const modified = { name: "Test", flow: [{ id: 1, module: "a", mapper: { x: 2 } }] };
+    const diff = diffBlueprints(original as any, modified as any);
+    expect(diff.modulesModified).toEqual([1]);
+  });
+
+  test("detects duplicate IDs", () => {
+    const original = { name: "Test", flow: [{ id: 1, module: "a" }] };
+    const modified = { name: "Test", flow: [{ id: 1, module: "a" }, { id: 1, module: "b" }] };
+    const diff = diffBlueprints(original as any, modified as any);
+    expect(diff.duplicateIds).toEqual([1]);
+  });
+
+  test("reports name change", () => {
+    const original = { name: "Old", flow: [] };
+    const modified = { name: "New", flow: [] };
+    const diff = diffBlueprints(original as any, modified as any);
+    expect(diff.nameChanged).toBe(true);
   });
 });

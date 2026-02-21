@@ -1,3 +1,15 @@
+import { walkModules } from "../utils/blueprint-traversal";
+import type { Blueprint } from "../make-api/types";
+
+export interface BlueprintDiff {
+  modulesAdded: number[];
+  modulesRemoved: number[];
+  modulesModified: number[];
+  duplicateIds: number[];
+  idsPreserved: boolean;
+  nameChanged: boolean;
+}
+
 export interface BlueprintEdit {
   path: string;
   action?: "set" | "insert" | "remove";
@@ -100,4 +112,41 @@ export function applyEdits<T>(obj: T, edits: BlueprintEdit[]): T {
   }
 
   return clone;
+}
+
+export function diffBlueprints(original: Blueprint, modified: Blueprint): BlueprintDiff {
+  const origModules = walkModules(original.flow);
+  const modModules = walkModules(modified.flow);
+
+  const origIds = new Set(origModules.map((m) => m.module.id));
+  const modIds = modModules.map((m) => m.module.id);
+  const modIdSet = new Set(modIds);
+
+  const modulesAdded = modIds.filter((id) => !origIds.has(id));
+  const modulesRemoved = [...origIds].filter((id) => !modIdSet.has(id));
+
+  const seen = new Set<number>();
+  const duplicateIds: number[] = [];
+  for (const id of modIds) {
+    if (seen.has(id)) duplicateIds.push(id);
+    seen.add(id);
+  }
+
+  const origMap = new Map(origModules.map((m) => [m.module.id, m.module]));
+  const modulesModified: number[] = [];
+  for (const walked of modModules) {
+    const orig = origMap.get(walked.module.id);
+    if (orig && JSON.stringify(orig) !== JSON.stringify(walked.module)) {
+      modulesModified.push(walked.module.id);
+    }
+  }
+
+  return {
+    modulesAdded: [...new Set(modulesAdded)],
+    modulesRemoved,
+    modulesModified,
+    duplicateIds: [...new Set(duplicateIds)],
+    idsPreserved: modulesRemoved.length === 0,
+    nameChanged: original.name !== modified.name,
+  };
 }
