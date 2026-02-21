@@ -3,3 +3,6 @@ dist/
 .env
 *.log
 blueprints/
+
+# dora code context index
+.dora/
