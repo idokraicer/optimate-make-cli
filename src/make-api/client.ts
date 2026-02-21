@@ -1,4 +1,12 @@
-import { BlueprintSchema, type Blueprint, type Note } from "./types";
+import {
+  BlueprintSchema,
+  MakeAppSchema,
+  AppModuleSchema,
+  type Blueprint,
+  type Note,
+  type MakeApp,
+  type AppModule,
+} from "./types";
 
 export interface MakeApiConfig {
   token: string;
@@ -94,5 +102,47 @@ export class MakeApiClient {
     } catch {
       return [];
     }
+  }
+
+  async fetchApps(opts?: { skipSdkApps?: boolean }): Promise<MakeApp[]> {
+    const params = new URLSearchParams();
+    if (opts?.skipSdkApps) params.set("skipSdkApps", "true");
+    const qs = params.toString();
+    const url = `${this.baseUrl}/api/v2/imt/apps-meta${qs ? `?${qs}` : ""}`;
+
+    const res = await fetch(url, { headers: this.headers() });
+    if (!res.ok) {
+      throw new Error(`Make API error ${res.status}: ${await res.text()}`);
+    }
+
+    const data = await res.json();
+    const raw = Array.isArray(data.apps) ? data.apps : [];
+    return raw.map((app: unknown) => MakeAppSchema.parse(app));
+  }
+
+  async fetchAppModules(appName: string, version: number): Promise<AppModule[]> {
+    const url = `${this.baseUrl}/api/v2/imt/apps/${encodeURIComponent(appName)}/${version}/modules-with-credentials`;
+
+    const res = await fetch(url, { headers: this.headers() });
+    if (!res.ok) {
+      throw new Error(`Make API error ${res.status}: ${await res.text()}`);
+    }
+
+    const data = await res.json();
+    const raw = Array.isArray(data.appModules) ? data.appModules : [];
+    return raw.map((mod: unknown) => AppModuleSchema.parse(mod));
+  }
+
+  async searchApps(query: string, apps?: MakeApp[]): Promise<MakeApp[]> {
+    const catalog = apps ?? await this.fetchApps();
+    const q = query.toLowerCase();
+
+    return catalog.filter((app) => {
+      return (
+        app.name.toLowerCase().includes(q) ||
+        app.label.toLowerCase().includes(q) ||
+        app.keywords.toLowerCase().includes(q)
+      );
+    });
   }
 }

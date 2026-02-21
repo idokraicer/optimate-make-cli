@@ -61,15 +61,16 @@ program
 program
   .command("fetch")
   .description("Fetch a scenario blueprint and save it locally for editing")
-  .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
+  .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .action(async (opts) => {
-    const client = await createClient();
-    console.log(`Fetching scenario ${opts.scenario}...`);
+    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await createClient(baseUrl);
+    console.log(`Fetching scenario ${scenarioId}...`);
 
-    const { blueprint } = await client.fetchBlueprint(opts.scenario);
+    const { blueprint } = await client.fetchBlueprint(scenarioId);
 
     await ensureDir(BLUEPRINTS_DIR);
-    const filePath = `${BLUEPRINTS_DIR}/${opts.scenario}.json`;
+    const filePath = `${BLUEPRINTS_DIR}/${scenarioId}.json`;
     await Bun.write(filePath, JSON.stringify(blueprint, null, 2));
 
     console.log(`Saved to ${filePath}`);
@@ -81,22 +82,23 @@ program
 program
   .command("analyze")
   .description("Analyze a scenario for quality issues (no changes made)")
-  .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
+  .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .option("--json", "Output as JSON instead of formatted report")
   .option("--var <name>", "Filter data flow to a specific variable name")
   .option("--local", "Analyze the local file instead of fetching from API")
   .action(async (opts) => {
+    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
     let blueprint: Blueprint;
     let notes: any[] = [];
 
     if (opts.local) {
-      blueprint = await readLocalBlueprint(opts.scenario);
+      blueprint = await readLocalBlueprint(scenarioId);
     } else {
-      const client = await createClient();
-      console.log(`Fetching scenario ${opts.scenario}...`);
-      const fetched = await client.fetchBlueprint(opts.scenario);
+      const client = await createClient(baseUrl);
+      console.log(`Fetching scenario ${scenarioId}...`);
+      const fetched = await client.fetchBlueprint(scenarioId);
       blueprint = fetched.blueprint;
-      notes = await client.fetchNotes(opts.scenario);
+      notes = await client.fetchNotes(scenarioId);
     }
 
     const result = analyze(blueprint, notes);
@@ -116,16 +118,17 @@ program
 program
   .command("fix")
   .description("Analyze and auto-fix a scenario")
-  .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
+  .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .option("--dry-run", "Show what would change without pushing")
   .option("--only <types>", "Only fix these issue types (comma-separated)")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
-    const client = await createClient();
-    console.log(`Fetching scenario ${opts.scenario}...`);
+    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await createClient(baseUrl);
+    console.log(`Fetching scenario ${scenarioId}...`);
 
-    const { blueprint } = await client.fetchBlueprint(opts.scenario);
-    const notes = await client.fetchNotes(opts.scenario);
+    const { blueprint } = await client.fetchBlueprint(scenarioId);
+    const notes = await client.fetchNotes(scenarioId);
 
     console.log("Analyzing...");
     const result = analyze(blueprint, notes);
@@ -167,7 +170,7 @@ program
       }
 
       console.log("Pushing fixed blueprint...");
-      await client.pushBlueprint(opts.scenario, fixed);
+      await client.pushBlueprint(scenarioId, fixed);
       console.log("Done! Blueprint updated successfully.");
     }
   });
@@ -176,14 +179,15 @@ program
 program
   .command("validate")
   .description("Compare local blueprint file against the remote version")
-  .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
+  .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
-    const client = await createClient();
-    const local = await readLocalBlueprint(opts.scenario);
+    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await createClient(baseUrl);
+    const local = await readLocalBlueprint(scenarioId);
 
-    console.log(`Fetching remote scenario ${opts.scenario}...`);
-    const { blueprint: remote } = await client.fetchBlueprint(opts.scenario);
+    console.log(`Fetching remote scenario ${scenarioId}...`);
+    const { blueprint: remote } = await client.fetchBlueprint(scenarioId);
 
     const diff = diffBlueprints(remote, local);
     const remoteAnalysis = analyze(remote, []);
@@ -218,15 +222,16 @@ program
 program
   .command("push")
   .description("Push a local blueprint file to Make.com")
-  .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
+  .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .option("--yes", "Skip confirmation prompt")
   .action(async (opts) => {
-    const client = await createClient();
-    const local = await readLocalBlueprint(opts.scenario);
+    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await createClient(baseUrl);
+    const local = await readLocalBlueprint(scenarioId);
 
     if (!opts.yes) {
       const modules = walkModules(local.flow);
-      console.log(`About to push blueprint "${local.name}" (${modules.length} modules) to scenario ${opts.scenario}.`);
+      console.log(`About to push blueprint "${local.name}" (${modules.length} modules) to scenario ${scenarioId}.`);
       process.stdout.write("Continue? [y/N] ");
       const answer = await new Promise<string>((resolve) => {
         process.stdin.once("data", (data) => {
@@ -241,11 +246,92 @@ program
     }
 
     console.log("Pushing blueprint...");
-    await client.pushBlueprint(opts.scenario, local);
+    await client.pushBlueprint(scenarioId, local);
     console.log("Done! Blueprint updated successfully.");
   });
 
+// --- apps command ---
+program
+  .command("apps")
+  .description("Search Make.com app catalog")
+  .argument("[query]", "Search query (filters by name, label, or keywords)")
+  .option("--limit <n>", "Maximum results to show", parseInt, 20)
+  .action(async (query, opts) => {
+    const client = await createClient();
+    console.log("Fetching app catalog...");
+
+    const apps = query
+      ? await client.searchApps(query)
+      : await client.fetchApps();
+
+    const display = apps.slice(0, opts.limit);
+
+    console.log(`\nFound ${apps.length} app(s)${query ? ` matching "${query}"` : ""}${apps.length > opts.limit ? ` (showing first ${opts.limit})` : ""}:\n`);
+
+    for (const app of display) {
+      const tags = [
+        app.isPrivate ? "private" : null,
+        app.premiumTier > 0 ? `premium:${app.premiumTier}` : null,
+      ].filter(Boolean);
+      const tagStr = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
+      console.log(`  ${app.name} (v${app.version}) - ${app.label}${tagStr}`);
+    }
+    console.log("");
+  });
+
+// --- modules command ---
+program
+  .command("modules")
+  .description("List modules for a Make.com app")
+  .argument("<app-name>", "App name/slug (e.g. google-sheets, monday)")
+  .option("--version <n>", "App version (auto-detected if omitted)", parseInt)
+  .action(async (appName, opts) => {
+    const client = await createClient();
+
+    let version = opts.version;
+    if (!version) {
+      const apps = await client.searchApps(appName);
+      const exact = apps.find((a) => a.name === appName);
+      if (!exact) {
+        console.error(`App "${appName}" not found. Try: make-fixer apps ${appName}`);
+        process.exit(1);
+      }
+      version = exact.version;
+    }
+
+    console.log(`Fetching modules for ${appName} v${version}...\n`);
+    const modules = await client.fetchAppModules(appName, version);
+
+    console.log(`${appName} — ${modules.length} module(s):\n`);
+    for (const mod of modules) {
+      const hookStr = mod.hook ? " [webhook]" : "";
+      console.log(`  ${mod.name.padEnd(45)} ${mod.label}${hookStr}`);
+    }
+    console.log("");
+  });
+
 // --- helpers ---
+
+function parseScenarioInput(input: string): { scenarioId: number; baseUrl?: string } {
+  // Try parsing as a Make.com URL first
+  const urlMatch = input.match(
+    /^https?:\/\/((?:eu|us)\d+\.make\.com)\/\d+\/scenarios\/(\d+)/
+  );
+  if (urlMatch) {
+    return {
+      scenarioId: parseInt(urlMatch[2], 10),
+      baseUrl: `https://${urlMatch[1]}`,
+    };
+  }
+
+  // Otherwise treat as a bare scenario ID
+  const id = parseInt(input, 10);
+  if (isNaN(id)) {
+    console.error(`Error: "${input}" is not a valid scenario ID or Make.com URL.`);
+    process.exit(1);
+  }
+  return { scenarioId: id };
+}
 
 function setEnvVar(content: string, key: string, value: string): string {
   const pattern = new RegExp(`^${key}=.*$`, "m");
@@ -267,10 +353,10 @@ async function loadGlobalEnv(): Promise<Record<string, string>> {
   return vars;
 }
 
-async function createClient(): Promise<MakeApiClient> {
+async function createClient(baseUrlOverride?: string): Promise<MakeApiClient> {
   const globalEnv = await loadGlobalEnv();
   const token = process.env.MAKE_API_TOKEN || globalEnv.MAKE_API_TOKEN;
-  const baseUrl = process.env.MAKE_BASE_URL || globalEnv.MAKE_BASE_URL || "https://eu1.make.com";
+  const baseUrl = baseUrlOverride || process.env.MAKE_BASE_URL || globalEnv.MAKE_BASE_URL || "https://eu1.make.com";
 
   if (!token) {
     console.error("Error: MAKE_API_TOKEN not found.");

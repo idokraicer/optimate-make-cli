@@ -70,7 +70,7 @@ A blueprint is a JSON object:
         "designer": { "x": 0, "y": 0, "name": "Custom Name" }
       },
       "onerror": [
-        { "id": 2, "module": "builtin:Break", "mapper": { "retry": true, "count": 3, "interval": 60 } }
+        { "id": 2, "module": "builtin:Break", "mapper": { "retry": true, "count": 3, "interval": 15 } }
       ],
       "routes": [
         { "flow": [ ... nested modules ... ] }
@@ -86,7 +86,7 @@ A blueprint is a JSON object:
 - **module**: Module type string like `gmail:sendEmail`, `powerlink:plquery`, `http:ActionSendData`
 - **mapper**: Module configuration (API URLs, field mappings, query parameters)
 - **metadata.designer.name**: Custom display name in the Make.com UI
-- **onerror**: Error handler array. Standard break handler: `[{ "id": N, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 60 } }]`
+- **onerror**: Error handler array. Standard break handler: `[{ "id": N, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 15 } }]`. The `interval` is in **minutes** (integer, 1–44640). `count` is number of retries (integer, 1–10). When `mapper` is omitted, Make.com defaults to `count: 3, interval: 15` (3 retries, 15 minutes).
 - **routes**: Array of route objects, each containing a `flow` array (for router modules)
 - **filter**: Filter condition between modules. Format: `{ "name": "Filter Name", "conditions": [[{ "a": "{{1.field}}", "b": "value", "o": "equal" }]] }`
 
@@ -115,13 +115,18 @@ Modules reference other modules' output with `{{moduleId.fieldName}}`:
 4. **Preserve the `idSequence` field** if present — it is server-managed.
 5. **Error handlers need their own unique IDs** — they are separate modules in the `onerror` array.
 6. **Position modules visually** using `metadata.designer.x` and `metadata.designer.y`. Increment `x` by ~300 for each subsequent module.
+7. **NEVER invent module types.** Only use module types that are confirmed to exist via:
+   - Modules already present in the fetched blueprint (copy their `module` and `version` fields exactly)
+   - Results from `make-fixer apps` / `make-fixer modules` commands
+   - JSON provided by the user (e.g. exported from Make.com)
+   If you need a module type that doesn't appear in any of these sources, **ask the user** to provide the JSON for that module (e.g. by adding it manually in Make.com and re-fetching the blueprint). Never guess module type strings or version numbers.
 
 ## Common Operations
 
 ### Add error handler to a module
 Edit the module's `onerror` field:
 ```json
-"onerror": [{ "id": NEXT_ID, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 60 } }]
+"onerror": [{ "id": NEXT_ID, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 15 } }]
 ```
 
 ### Rename a module
@@ -135,6 +140,17 @@ Insert into the `flow` array at the desired position with a unique ID.
 
 ### Add a route
 Add an object with a `flow` array to a router module's `routes` array.
+
+## App & Module Discovery
+
+Search available apps and their modules to find the correct `module` type strings for blueprints:
+
+```bash
+make-fixer apps <query>          # Search apps by name/label/keywords
+make-fixer modules <app-name>    # List modules for an app (auto-detects version)
+```
+
+The blueprint `module` field is `appSlug:moduleName` — e.g. `google-sheets:addRow`, `monday:CreateItemV2`.
 
 ## $ARGUMENTS
 

@@ -1,4 +1,5 @@
 import type { ClassifiedModule, ErrorHandler, Issue } from "../../make-api/types";
+import { BREAK_DEFAULTS } from "../../make-api/types";
 import { hasErrorHandler, translateModuleType } from "../../utils/module-helpers";
 
 export function describeErrorHandler(handlers: ErrorHandler[]): string {
@@ -10,10 +11,14 @@ function describeOneHandler(handler: ErrorHandler): string {
 
   if (type === "builtin:Break") {
     const mapper = handler.mapper;
-    if (mapper?.retry) {
-      const count = mapper.count ?? "?";
-      const interval = mapper.interval ? formatDuration(mapper.interval) : "?";
-      return `Break (retry=${count}, interval=${interval})`;
+    const count = mapper?.count ?? BREAK_DEFAULTS.count;
+    const interval = mapper?.interval ?? BREAK_DEFAULTS.interval;
+    const retry = mapper?.retry ?? BREAK_DEFAULTS.retry;
+
+    if (retry) {
+      const intervalStr = formatMinutes(interval);
+      const suffix = !mapper ? " [ברירת מחדל]" : "";
+      return `Break (retry=${count}, interval=${intervalStr}${suffix})`;
     }
     return "Break";
   }
@@ -50,6 +55,12 @@ function formatDuration(seconds: number): string {
   if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600}h`;
   if (seconds >= 60 && seconds % 60 === 0) return `${seconds / 60}m`;
   return `${seconds}s`;
+}
+
+/** Format a duration given in minutes (used by Break interval which is stored in minutes) */
+function formatMinutes(minutes: number): string {
+  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
 }
 
 export function checkErrorHandling(classified: ClassifiedModule[]): Issue[] {

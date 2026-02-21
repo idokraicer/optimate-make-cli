@@ -1,4 +1,5 @@
 import type { Module, ErrorHandler } from "../../make-api/types";
+import { BREAK_DEFAULTS } from "../../make-api/types";
 
 export function createBreakHandler(id: number): ErrorHandler {
   return {
@@ -6,11 +7,7 @@ export function createBreakHandler(id: number): ErrorHandler {
     module: "builtin:Break",
     version: 1,
     parameters: {},
-    mapper: {
-      retry: true,
-      count: 3,
-      interval: 60,
-    },
+    mapper: { ...BREAK_DEFAULTS },
     metadata: {
       designer: { x: 0, y: 0 },
       parameters: [

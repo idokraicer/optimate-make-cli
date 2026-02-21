@@ -26,6 +26,24 @@ export const FilterSchema = z.object({
   conditions: z.any().optional(),
 }).catchall(z.unknown());
 
+/**
+ * Break module mapper schema.
+ * When a builtin:Break has no mapper, Make.com defaults to: retry=true, count=3, interval=15.
+ * - count: number of retries (integer, 1–10)
+ * - interval: minutes between retries (integer, 1–44640 i.e. 31 days)
+ */
+export const BreakMapperSchema = z.object({
+  retry: z.boolean(),
+  count: z.number().int().min(1).max(10),
+  interval: z.number().int().min(1).max(44640), // minutes
+});
+
+export const BREAK_DEFAULTS = {
+  retry: true,
+  count: 3,
+  interval: 15, // minutes
+} as const satisfies z.infer<typeof BreakMapperSchema>;
+
 export const ErrorHandlerSchema: z.ZodType<any> = z.object({
   id: z.number(),
   module: z.string(),
@@ -87,6 +105,30 @@ export interface Note {
   content: string;
   createdByUser?: { name?: string; email?: string };
 }
+
+// --- App Catalog types ---
+
+export const MakeAppSchema = z.object({
+  name: z.string(),
+  label: z.string(),
+  version: z.number(),
+  theme: z.string().nullish().transform((v) => v ?? ""),
+  keywords: z.string().nullish().transform((v) => v ?? ""),
+  categories: z.array(z.string()).nullish().transform((v) => v ?? []),
+  isPrivate: z.boolean().nullish().transform((v) => v ?? false),
+  premiumTier: z.number().nullish().transform((v) => v ?? 0),
+}).catchall(z.unknown());
+
+export const AppModuleSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  label: z.string(),
+  type: z.string().optional().default(""),
+  hook: z.boolean().optional().default(false),
+}).catchall(z.unknown());
+
+export type MakeApp = z.infer<typeof MakeAppSchema>;
+export type AppModule = z.infer<typeof AppModuleSchema>;
 
 // --- Analysis types ---
 

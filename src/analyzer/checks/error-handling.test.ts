@@ -43,7 +43,7 @@ describe("checkErrorHandling", () => {
     const issues = checkErrorHandling(classified);
     const info = issues.find((i) => i.moduleId === 3 && i.severity === "info");
     expect(info).toBeDefined();
-    expect(info!.message).toContain("Break (retry=3, interval=1m)");
+    expect(info!.message).toContain("Break (retry=3, interval=1h)");
   });
 });
 
@@ -52,14 +52,14 @@ describe("describeErrorHandler", () => {
     const handlers: ErrorHandler[] = [
       { id: 10, module: "builtin:Break", mapper: {} },
     ];
-    expect(describeErrorHandler(handlers)).toBe("Break");
+    expect(describeErrorHandler(handlers)).toBe("Break (retry=3, interval=15m)");
   });
 
   test("describes Break with retry", () => {
     const handlers: ErrorHandler[] = [
       { id: 10, module: "builtin:Break", mapper: { retry: true, count: 5, interval: 120 } },
     ];
-    expect(describeErrorHandler(handlers)).toBe("Break (retry=5, interval=2m)");
+    expect(describeErrorHandler(handlers)).toBe("Break (retry=5, interval=2h)");
   });
 
   test("describes Resume and Ignore", () => {
@@ -84,7 +84,7 @@ describe("describeErrorHandler", () => {
       },
     ];
     expect(describeErrorHandler(handlers)).toBe(
-      "Router [Sleep(45s) → Fireberry - שליפת נתונים → Break (retry=3, interval=1m)]"
+      "Router [Sleep(45s) → Fireberry - שליפת נתונים → Break (retry=3, interval=1h)]"
     );
   });
 

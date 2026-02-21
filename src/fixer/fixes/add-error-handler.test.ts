@@ -16,7 +16,7 @@ describe("addErrorHandler", () => {
     expect(result.onerror![0].module).toBe("builtin:Break");
     expect(result.onerror![0].mapper.retry).toBe(true);
     expect(result.onerror![0].mapper.count).toBe(3);
-    expect(result.onerror![0].mapper.interval).toBe(60);
+    expect(result.onerror![0].mapper.interval).toBe(15);
   });
 
   test("does not modify original module", () => {
