@@ -5,6 +5,18 @@ import { formatReport } from "./reporter/index";
 import simpleBlueprint from "../tests/fixtures/simple-blueprint.json";
 import type { Blueprint } from "./make-api/types";
 
+describe("CLI commands", () => {
+  test("CLI has agent command", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "agent", "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).toContain("--scenario");
+    expect(stdout).toContain("interactive AI agent");
+  });
+});
+
 describe("CLI integration (no network)", () => {
   test("full analyze → fix → report pipeline works", async () => {
     const blueprint = simpleBlueprint as Blueprint;

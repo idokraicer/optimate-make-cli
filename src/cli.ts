@@ -6,6 +6,7 @@ import { analyze } from "./analyzer/index";
 import { filterDataFlow } from "./analyzer/checks/data-flow";
 import { applyFixes } from "./fixer/index";
 import { formatReport, formatJson } from "./reporter/index";
+import { runAgent } from "./agent/index";
 
 const program = new Command();
 
@@ -96,6 +97,25 @@ program
       await client.pushBlueprint(opts.scenario, fixed);
       console.log("Done! Blueprint updated successfully.");
     }
+  });
+
+program
+  .command("agent")
+  .description("Start an interactive AI agent session to edit a scenario")
+  .requiredOption("-s, --scenario <id>", "Make.com scenario ID", parseInt)
+  .action(async (opts) => {
+    const client = createClient();
+    console.log(`Fetching scenario ${opts.scenario}...`);
+
+    const { blueprint } = await client.fetchBlueprint(opts.scenario);
+    const notes = await client.fetchNotes(opts.scenario);
+
+    await runAgent({
+      client,
+      scenarioId: opts.scenario,
+      blueprint,
+      notes,
+    });
   });
 
 function createClient(): MakeApiClient {
