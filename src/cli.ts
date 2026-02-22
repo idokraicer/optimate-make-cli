@@ -11,6 +11,7 @@ import { formatReport, formatJson } from "./reporter/index";
 import { diffBlueprints } from "./agent/blueprint-editor";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
+import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
 
 const BLUEPRINTS_DIR = "blueprints";
 const GLOBAL_CONFIG_DIR = `${process.env.HOME}/.make-fixer`;
@@ -249,6 +250,58 @@ program
     console.log("Pushing blueprint...");
     await client.pushBlueprint(scenarioId, local);
     console.log("Done! Blueprint updated successfully.");
+  });
+
+// --- resume command ---
+program
+  .command("resume")
+  .description("Generate a builtin:Resume module JSON for the 429 retry pattern")
+  .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL (reads local blueprint)")
+  .requiredOption("--errored <id>", "ID of the module that can fail (provides interface fields)", parseInt)
+  .requiredOption("--from <id>", "ID of the retry clone module (fields will be mapped from this module)", parseInt)
+  .option("--id <id>", "ID to assign to the Resume module (default: next available ID)", parseInt)
+  .option("--x <n>", "Designer x position", parseInt)
+  .option("--y <n>", "Designer y position", parseInt)
+  .action(async (opts) => {
+    const { scenarioId } = parseScenarioInput(opts.scenario);
+    const local = await readLocalBlueprint(scenarioId);
+
+    // Find the errored module
+    const erroredModule = findModuleById(local.flow, opts.errored);
+    if (!erroredModule) {
+      console.error(`Error: Module #${opts.errored} not found in blueprint ${scenarioId}.`);
+      console.error(`Run: make-fixer fetch -s ${scenarioId}`);
+      process.exit(1);
+    }
+
+    // Resolve Resume module ID
+    const maxId = getMaxModuleId(local.flow);
+    const resumeId: number = opts.id ?? maxId + 1;
+
+    // Determine position
+    const x: number = opts.x ?? 0;
+    const y: number = opts.y ?? 0;
+
+    // Check interface
+    const iface = extractInterface(erroredModule);
+    if (!iface) {
+      console.warn(
+        `Warning: Module #${opts.errored} (${erroredModule.module}) has no interface defined in its metadata.`
+      );
+      console.warn(
+        `The Resume mapper will be empty. You may need to add field mappings manually.`
+      );
+      console.warn(
+        `Tip: Fetch a fresh copy of the blueprint after the scenario has run at least once — Make.com populates the interface after execution.`
+      );
+    } else {
+      console.error(`Found ${iface.length} interface field(s) on module #${opts.errored} (${erroredModule.module})`);
+      console.error(`Mapping from retry module #${opts.from} → Resume module #${resumeId}\n`);
+    }
+
+    const resumeModule = buildResumeModule(erroredModule, opts.from, resumeId, { x, y });
+
+    console.log(JSON.stringify(resumeModule, null, 2));
   });
 
 // --- apps command ---
