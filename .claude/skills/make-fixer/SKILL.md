@@ -167,7 +167,7 @@ Only **upstream (pre-router)** data is accessible in all routes and downstream. 
 15. **Use `util:SetVariables` over multiple `util:SetVariable2`.** Setting 3 variables in one `util:SetVariables` module costs 1 operation. Three separate `util:SetVariable2` modules cost 3 operations.
 16. **Prefer webhooks over polling.** Polling triggers consume 1 operation per check even when no new data exists. At 15-minute intervals that is 2,880 wasted operations/month just from the trigger. Webhooks fire only on real events and cost zero when idle.
 17. **Error handler choice matters.** Use `builtin:Break` for transient failures (API errors, rate limits) — it stores as incomplete execution for automatic retry. Use `builtin:Resume` when a fallback value is acceptable and the flow should continue. Use `builtin:Ignore` only for truly optional side effects. For critical modules, add a Slack/email notification module BEFORE the directive on the error route so failures are visible.
-18. **429 rate limit retry pattern.** When an HTTP module hits a rate limit, handle it in-execution: `[HTTP module] --error route--> [Sleep: 60s] --> [clone of HTTP module] --> [Resume]`. Enable "Evaluate all states as errors (except 2xx/3xx)" on the HTTP module to catch 429 responses on the error route.
+18. **429 rate limit retry pattern.** Place a `builtin:BasicRouter` in the `onerror` array. Route A filters for "429" in the error text and runs: `[Sleep] → [retry clone of original module] → [builtin:Resume]`. Route B (fallback) is `builtin:Break`. The `builtin:Resume` mapper **must replicate every output field** of the errored module, mapping each from the retry module's output (`"fieldName": "{{retryModuleId.fieldName}}"`). Any field omitted from the Resume mapper will be empty downstream. See `BEST_PRACTICES.md` for the full pattern with JSON.
 
 ## Architecture Decisions
 
@@ -227,6 +227,21 @@ make-fixer modules <app-name>    # List modules for an app (auto-detects version
 ```
 
 The blueprint `module` field is `appSlug:moduleName` — e.g. `google-sheets:addRow`, `monday:CreateItemV2`.
+
+## Generate a Resume Module
+
+When implementing the 429 retry pattern, use the `resume` command to generate the `builtin:Resume` JSON automatically instead of writing it by hand:
+
+```bash
+make-fixer resume -s <scenarioId> --errored <moduleId> --from <retryModuleId> [--id <n>] [--x <n>] [--y <n>]
+```
+
+- `--errored` — ID of the module that can fail (its `metadata.interface` provides the field list)
+- `--from` — ID of the retry clone module (all mapper values reference this module's output)
+- `--id` — Resume module ID (defaults to next available ID in the blueprint)
+- `--x / --y` — Designer position
+
+The command reads the local blueprint, extracts every output field from the errored module's interface, and produces a complete `builtin:Resume` JSON with the mapper fully populated. `__IMTINDEX__` and `__IMTLENGTH__` are wrapped in backtick syntax automatically.
 
 ## Best Practices Reference
 

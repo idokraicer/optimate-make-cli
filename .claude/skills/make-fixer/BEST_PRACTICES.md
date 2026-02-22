@@ -50,15 +50,52 @@ Make auto-retries `RateLimitError`, `ConnectionError`, and `ModuleTimeoutError` 
 
 ### 429 rate limit in-execution retry pattern
 
+The full pattern uses a router inside the `onerror` array so that 429s retry while other errors still Break:
+
 ```
-[HTTP Module]
-  --error route-->
-    [Sleep: 60s]          ← duration = API's rate-limit reset window
-    [Clone of HTTP Module] ← identical config to original
-    [Resume]              ← continues with clone's output
+[Original Module #5]
+  onerror:
+    [BasicRouter #22]
+      Route A — filter: error contains "429"
+        [Sleep #19: 45s]
+        [Retry Module #20]  ← identical mapper to original
+          onerror: [Break #29]
+        [Resume #23]        ← maps ALL output fields from #20
+      Route B — (else/fallback)
+        [Break #24]
 ```
 
-Enable **"Evaluate all states as errors (except 2xx/3xx)"** on the HTTP module so that 429 responses trigger the error route. Add a filter on the error route keyed to status code 429 if you want to only retry on rate limits, not all errors.
+**Critical: the `builtin:Resume` mapper must replicate every output field** of the errored module, mapping each from the retry module. The downstream flow sees a bundle identical to what the original module would have produced.
+
+```json
+{
+  "id": 23,
+  "module": "builtin:Resume",
+  "version": 1,
+  "mapper": {
+    "name":                  "{{20.name}}",
+    "pcftitle":              "{{20.pcftitle}}",
+    "pcfDocType":            "{{20.pcfDocType}}",
+    "pcfProject":            "{{20.pcfProject}}",
+    "__IMTINDEX__":          "{{20.`__IMTINDEX__`}}",
+    "__IMTLENGTH__":         "{{20.`__IMTLENGTH__`}}"
+  }
+}
+```
+
+Map **every field** listed in the errored module's `interface` definition. If a field is omitted from the Resume mapper, downstream modules that reference `{{5.thatField}}` will receive empty values.
+
+The retry module (#20) must be a copy of the original module (#5) with the same `mapper` and `parameters`. Its own `onerror` should use `builtin:Break` so that a second 429 on the retry is stored as an incomplete execution rather than looping infinitely.
+
+To detect 429s on the error route filter, use:
+```json
+{
+  "a": "{{5.error.type}}{{5.error.message}}{{5.error.detail}}",
+  "b": "429",
+  "o": "text:contain"
+}
+```
+(Replace `5` with the errored module's ID.)
 
 ### Error notification pattern
 
