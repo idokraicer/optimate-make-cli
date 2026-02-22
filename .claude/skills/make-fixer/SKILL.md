@@ -101,25 +101,66 @@ Common types:
 - Communication: `gmail:sendEmail`, `slack:sendMessage`
 - Routing: `flow:Router` (has `routes` array)
 
+### Variable modules
+
+**Get Multiple Variables** (`util:GetVariables`) — `variables` is an array of **plain strings**:
+```json
+"mapper": { "variables": ["myVar1", "myVar2"] }
+```
+
+**Set Multiple Variables** (`util:SetVariables`) — `variables` is an array of **objects** with `name` and `value`, plus a `scope` field:
+```json
+"mapper": {
+  "scope": "roundtrip",
+  "variables": [
+    { "name": "myVar", "value": "{{1.fieldName}}" }
+  ]
+}
+```
+`scope` is `"roundtrip"` (one cycle) or `"execution"` (entire execution).
+
+**WARNING:** These two formats are different. Do NOT use objects for Get or plain strings for Set. When in doubt, copy the exact format from an existing working module in the blueprint.
+
 ### Variable references
 
 Modules reference other modules' output with `{{moduleId.fieldName}}`:
 - `{{1.phone}}` — field `phone` from module #1
 - `{{ifempty(1.phone; "")}}` — with fallback
 
+### Branch scope — CRITICAL
+
+Each route of a Router is an independent execution branch. **Modules in different routes cannot see each other's output.**
+
+```
+#5 (upstream)
+  ↓
+[Router]
+  ├─ Route 1: #10 → #11          ← #10 output visible only here
+  ├─ Route 2: filter {{10.body.x}}  ← BROKEN: #10 is in Route 1, invisible here
+  └─ Route 3: (continue)
+       ↓
+      #20 (downstream)            ← {{5.x}} works, {{10.x}} does NOT
+```
+
+Only **upstream (pre-router)** data is accessible in all routes and downstream. To share data produced inside a route, use SetVariable in the route and GetVariable after the router converges.
+
 ## Rules
 
-1. **Never reuse module IDs.** Check the "Next ID" shown by `fetch` or `validate`.
-2. **Always validate before pushing.** Run `make-fixer validate -s <id>` to check your changes.
-3. **Always ask the user before pushing.** Show them what changed and get explicit confirmation.
-4. **Preserve the `idSequence` field** if present — it is server-managed.
-5. **Error handlers need their own unique IDs** — they are separate modules in the `onerror` array.
-6. **Position modules visually** using `metadata.designer.x` and `metadata.designer.y`. Increment `x` by ~300 for each subsequent module.
-7. **NEVER invent module types.** Only use module types that are confirmed to exist via:
+1. **Optimize for cost efficiency.** Every module run costs operations and credits. Always build scenarios with the minimum number of modules needed. Consolidate logic where possible, avoid redundant modules, and prefer fewer modules doing more over many modules doing little.
+2. **"Name a run" is the only free module.** The `builtin:NameARun` module costs zero credits/operations. Use it freely for labeling scenario executions — it has no cost impact. All other modules count toward operations.
+3. **Never reuse module IDs.** Check the "Next ID" shown by `fetch` or `validate`.
+4. **Always validate before pushing.** Run `make-fixer validate -s <id>` to check your changes.
+5. **Always ask the user before pushing.** Show them what changed and get explicit confirmation.
+6. **Preserve the `idSequence` field** if present — it is server-managed.
+7. **Error handlers need their own unique IDs** — they are separate modules in the `onerror` array.
+8. **Position modules visually** using `metadata.designer.x` and `metadata.designer.y`. Increment `x` by ~300 for each subsequent module.
+9. **NEVER invent module types.** Only use module types that are confirmed to exist via:
    - Modules already present in the fetched blueprint (copy their `module` and `version` fields exactly)
    - Results from `make-fixer apps` / `make-fixer modules` commands
    - JSON provided by the user (e.g. exported from Make.com)
    If you need a module type that doesn't appear in any of these sources, **ask the user** to provide the JSON for that module (e.g. by adding it manually in Make.com and re-fetching the blueprint). Never guess module type strings or version numbers.
+10. **Choose the best solution for the problem.** Before building, think about which approach best balances efficiency and best practices given the available modules and tools. Don't default to the most obvious structure — consider alternatives that are simpler, cheaper, or more maintainable. The best solution is one that is both cost-efficient and follows sound design practices.
+11. **Keep scenarios maintainable — avoid excessive routing.** Too many routes create complexity that is very hard to maintain. Clients frequently request changes to modules deep in route branches (leaf modules), and deeply nested or heavily branched scenarios make those changes painful. Prefer flatter, simpler structures when possible. Only add routes when the logic genuinely requires separate execution paths.
 
 ## Common Operations
 

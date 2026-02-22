@@ -7,6 +7,7 @@ import {
   type MakeApp,
   type AppModule,
 } from "./types";
+import { BUILTIN_MODULES } from "../data/builtin-modules";
 
 export interface MakeApiConfig {
   token: string;
@@ -121,6 +122,9 @@ export class MakeApiClient {
   }
 
   async fetchAppModules(appName: string, version: number): Promise<AppModule[]> {
+    const builtin = BUILTIN_MODULES[appName];
+    if (builtin) return builtin;
+
     const url = `${this.baseUrl}/api/v2/imt/apps/${encodeURIComponent(appName)}/${version}/modules-with-credentials`;
 
     const res = await fetch(url, { headers: this.headers() });

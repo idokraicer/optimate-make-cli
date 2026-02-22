@@ -3,6 +3,7 @@
 import { Command } from "commander";
 import { MakeApiClient } from "./make-api/client";
 import { BlueprintSchema, type Blueprint } from "./make-api/types";
+import { BUILTIN_MODULE_TEMPLATES } from "./data/builtin-modules";
 import { analyze } from "./analyzer/index";
 import { filterDataFlow } from "./analyzer/checks/data-flow";
 import { applyFixes } from "./fixer/index";
@@ -306,6 +307,16 @@ program
     for (const mod of modules) {
       const hookStr = mod.hook ? " [webhook]" : "";
       console.log(`  ${mod.name.padEnd(45)} ${mod.label}${hookStr}`);
+
+      const template = BUILTIN_MODULE_TEMPLATES[mod.id];
+      if (template) {
+        if (template.mapper != null) {
+          console.log(`    mapper: ${JSON.stringify(template.mapper)}`);
+        }
+        if (template.parameters) {
+          console.log(`    parameters: ${JSON.stringify(template.parameters)}`);
+        }
+      }
     }
     console.log("");
   });
