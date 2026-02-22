@@ -161,6 +161,41 @@ Only **upstream (pre-router)** data is accessible in all routes and downstream. 
    If you need a module type that doesn't appear in any of these sources, **ask the user** to provide the JSON for that module (e.g. by adding it manually in Make.com and re-fetching the blueprint). Never guess module type strings or version numbers.
 10. **Choose the best solution for the problem.** Before building, think about which approach best balances efficiency and best practices given the available modules and tools. Don't default to the most obvious structure — consider alternatives that are simpler, cheaper, or more maintainable. The best solution is one that is both cost-efficient and follows sound design practices.
 11. **Keep scenarios maintainable — avoid excessive routing.** Too many routes create complexity that is very hard to maintain. Clients frequently request changes to modules deep in route branches (leaf modules), and deeply nested or heavily branched scenarios make those changes painful. Prefer flatter, simpler structures when possible. Only add routes when the logic genuinely requires separate execution paths.
+12. **Filter early.** Place filters immediately after the trigger to eliminate irrelevant bundles before they reach expensive downstream modules. Each filtered-out bundle saves all downstream operation costs.
+13. **Move lookups before iterators.** Any module that fetches static or shared data (API lookups, GetVariable, search modules) must run ONCE before the iterator, not inside it. A lookup inside an iterator of N items costs N operations; before the iterator it costs 1.
+14. **Batch writes with aggregators.** Use an Array Aggregator before bulk write endpoints instead of writing records one by one. 100 individual writes = 100 operations; one aggregated batch write = 1–3 operations.
+15. **Use `util:SetVariables` over multiple `util:SetVariable2`.** Setting 3 variables in one `util:SetVariables` module costs 1 operation. Three separate `util:SetVariable2` modules cost 3 operations.
+16. **Prefer webhooks over polling.** Polling triggers consume 1 operation per check even when no new data exists. At 15-minute intervals that is 2,880 wasted operations/month just from the trigger. Webhooks fire only on real events and cost zero when idle.
+17. **Error handler choice matters.** Use `builtin:Break` for transient failures (API errors, rate limits) — it stores as incomplete execution for automatic retry. Use `builtin:Resume` when a fallback value is acceptable and the flow should continue. Use `builtin:Ignore` only for truly optional side effects. For critical modules, add a Slack/email notification module BEFORE the directive on the error route so failures are visible.
+18. **429 rate limit retry pattern.** When an HTTP module hits a rate limit, handle it in-execution: `[HTTP module] --error route--> [Sleep: 60s] --> [clone of HTTP module] --> [Resume]`. Enable "Evaluate all states as errors (except 2xx/3xx)" on the HTTP module to catch 429 responses on the error route.
+
+## Architecture Decisions
+
+Use this table to choose the right structure before building:
+
+| Pattern | Use When |
+|---------|----------|
+| **Router** | Multiple conditions from the same trigger data; branches share the same payload; logic is related and maintained by one team |
+| **Subscenario** | Same module sequence appears in 2+ scenarios; logic can be expressed as a function with typed inputs/outputs |
+| **Webhook Chain** | Truly async parallel fan-out; child process runs independently and no response is needed from the parent |
+| **Separate Scenario** | Different teams own the branches; different scheduling requirements; fully independent concerns |
+
+### Variable scope quick reference
+
+| Scope | Lifetime | Reset behavior |
+|-------|----------|----------------|
+| `roundtrip` | One cycle | Does **NOT** reset between iterator iterations — scoped to the bundle cycle, not the iterator step |
+| `execution` | Entire scenario run | Persists across all bundles, cycles, and iterations |
+
+### Data Store vs. Variables
+
+| Need | Use |
+|------|-----|
+| Pass data between modules within a single run | Variable (`execution` scope) |
+| Per-bundle data inside an iterator | Variable (`roundtrip` scope) |
+| State that must survive between runs | Data Store |
+| Deduplication / idempotency across runs | Data Store |
+| Shared config across multiple scenarios | Data Store or Custom Team Variable |
 
 ## Common Operations
 
@@ -192,6 +227,10 @@ make-fixer modules <app-name>    # List modules for an app (auto-detects version
 ```
 
 The blueprint `module` field is `appSlug:moduleName` — e.g. `google-sheets:addRow`, `monday:CreateItemV2`.
+
+## Best Practices Reference
+
+For detailed guidance on error handling patterns, debugging workflows, testing strategies, naming conventions, timeout management, queue-based architecture, and AI integration patterns, see [BEST_PRACTICES.md](BEST_PRACTICES.md).
 
 ## $ARGUMENTS
 
