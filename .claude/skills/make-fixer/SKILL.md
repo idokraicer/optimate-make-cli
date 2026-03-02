@@ -243,9 +243,32 @@ make-fixer resume -s <scenarioId> --errored <moduleId> --from <retryModuleId> [-
 
 The command reads the local blueprint, extracts every output field from the errored module's interface, and produces a complete `builtin:Resume` JSON with the mapper fully populated. `__IMTINDEX__` and `__IMTLENGTH__` are wrapped in backtick syntax automatically.
 
-## Best Practices Reference
+## Scenario Notes
 
-For detailed guidance on error handling patterns, debugging workflows, testing strategies, naming conventions, timeout management, queue-based architecture, and AI integration patterns, see [BEST_PRACTICES.md](BEST_PRACTICES.md).
+Notes are **separate from the blueprint** — they're managed via the Make.com API, not stored in the blueprint JSON. Use them to document module purposes, business logic, or implementation details.
+
+```bash
+make-fixer notes -s <scenarioId>                                         # List all notes
+make-fixer notes -s <scenarioId> --add --module 1,2 --content "text"     # Add a note
+```
+
+- `--module` — comma-separated module IDs the note is attached to
+- `--content` — note text (supports HTML: `<br>` for line breaks, `<b>` for bold)
+- Without `--add`, lists all notes with module IDs, content preview, and author
+
+## Make.com Documentation
+
+To fetch LLM-friendly documentation from Make.com's help center, append `.md` to any help page URL:
+
+- **Browser URL:** `https://help.make.com/text-and-binary-functions`
+- **LLM-friendly:** `https://help.make.com/text-and-binary-functions.md`
+
+Use this when you need to look up module behavior, function references, or any Make.com documentation. The `.md` endpoint returns clean markdown suitable for reading directly.
+
+## Reference Files
+
+- **[FUNCTIONS_REFERENCE.md](FUNCTIONS_REFERENCE.md)** — Complete function catalog (70+ functions), data types, type coercion, filter operators, and date/time tokens. Load this when working with inline functions, data mapping, or filtering.
+- **[BEST_PRACTICES.md](BEST_PRACTICES.md)** — Error handling patterns, debugging workflows, testing strategies, naming conventions, architecture patterns, module types, and cost optimization.
 
 ## $ARGUMENTS
 

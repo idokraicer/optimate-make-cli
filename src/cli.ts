@@ -304,6 +304,49 @@ program
     console.log(JSON.stringify(resumeModule, null, 2));
   });
 
+// --- notes command ---
+program
+  .command("notes")
+  .description("List or add notes on a Make.com scenario")
+  .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
+  .option("--add", "Create a new note (requires --module and --content)")
+  .option("--module <ids>", "Comma-separated module IDs for the note")
+  .option("--content <text>", "Note content (supports HTML, e.g. <br> for line breaks)")
+  .action(async (opts) => {
+    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await createClient(baseUrl);
+
+    if (opts.add) {
+      if (!opts.module || !opts.content) {
+        console.error("Error: --add requires both --module and --content.");
+        process.exit(1);
+      }
+      const moduleIds = opts.module.split(",").map((s: string) => parseInt(s.trim(), 10));
+      const note = await client.createNote(scenarioId, moduleIds, opts.content);
+      console.log(`Created note #${note.id} on module(s) ${moduleIds.map((id: number) => `#${id}`).join(", ")}`);
+      return;
+    }
+
+    // List notes
+    const notes = await client.fetchNotes(scenarioId);
+    if (notes.length === 0) {
+      console.log(`No notes found for scenario ${scenarioId}.`);
+      return;
+    }
+
+    console.log(`\nNotes for scenario ${scenarioId} (${notes.length} note${notes.length !== 1 ? "s" : ""}):\n`);
+    for (const note of notes) {
+      const modules = note.moduleIds.map((id) => `#${id}`).join(", ");
+      const author = note.createdByUser?.name || note.createdByUser?.email || "";
+      const authorStr = author ? ` (by ${author})` : "";
+      const content = note.content.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      const preview = content.length > 100 ? content.slice(0, 100) + "..." : content;
+      console.log(`  Note #${note.id} → Modules: ${modules}${authorStr}`);
+      console.log(`    ${preview}`);
+      console.log("");
+    }
+  });
+
 // --- apps command ---
 program
   .command("apps")

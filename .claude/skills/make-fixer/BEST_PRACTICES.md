@@ -360,3 +360,55 @@ Development workflow:
 - Maintain separate workspaces for `dev`, `staging`, `production`
 - Never edit production scenarios directly — clone, test, then replace
 - Use Custom Scenario Properties to tag scenarios with `environment`, `owner`, `version`
+
+---
+
+## Module Types Quick Reference
+
+[Live docs](https://help.make.com/types-of-modules.md)
+
+### By Function
+
+| Type | Description | Naming Pattern |
+|------|-------------|----------------|
+| **Trigger (Polling)** | Checks for new data on schedule. Consumes 1 op per check even with no data | "Watch..." |
+| **Trigger (Instant)** | Webhook-based — fires only on real events, zero cost when idle | "Instant trigger" |
+| **Search** | Retrieves filtered data. Returns multiple bundles (max 3,200 objects or 5MB) | "Search..." / "List..." |
+| **Action** | Processes data — Get, Create, Update, Delete, plus service-specific actions | Verb-based |
+| **Universal** | Custom API calls when no pre-built module exists | "Make an API Call" |
+
+### By Connection
+
+| Category | Description |
+|----------|-------------|
+| **Apps** | Require connection to third-party services (Google, Slack, HubSpot, etc.) |
+| **Tools** | No connection needed — Iterator, Aggregator, Router, Data Store, Variables |
+
+---
+
+## Data Types & Type Coercion
+
+[Live docs: types](https://help.make.com/item-data-types.md) | [Live docs: coercion](https://help.make.com/type-coercion.md)
+
+For the complete reference including coercion tables, see [FUNCTIONS_REFERENCE.md](FUNCTIONS_REFERENCE.md#data-types).
+
+### Key coercion gotchas
+
+- **Number → Boolean** = always `Yes` (even `0`)
+- **Empty text → Boolean** = `No`; any non-empty text = `Yes`
+- **Non-numeric text → Number** = validation error (no silent fallback)
+- **Collection → anything** = validation error (collections don't auto-convert)
+- **Any value → Array** = wrapped as single-element array
+
+---
+
+## Inline Functions Reference
+
+For the complete function catalog (70+ functions with signatures, parameters, return types), date/time tokens, and filter operators, see [FUNCTIONS_REFERENCE.md](FUNCTIONS_REFERENCE.md).
+
+### Quick syntax reminders
+
+- Arguments separated by **semicolons**: `if(1=1; "yes"; "no")`
+- `now` and `timestamp` are **variables** (no parentheses)
+- Array indexing: **1-based** in `get()`, **0-based** in `slice()`
+- Days between dates: `{{round((date2 - date1) / 1000 / 60 / 60 / 24)}}`
