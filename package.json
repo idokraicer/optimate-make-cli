@@ -9,7 +9,7 @@
     "start": "bun src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "postinstall": "echo '\n  make-fixer installed successfully!\n\n  Get started:\n    make-fixer login --token <your-make-api-token>\n\n  Claude Code skill (optional):\n    git clone https://github.com/idokraicer/optimate-plugins.git /tmp/optimate-plugins && cp -r /tmp/optimate-plugins/plugins/make-fixer/skills/make-fixer .claude/skills/ && rm -rf /tmp/optimate-plugins\n'"
+    "postinstall": "echo '\n  make-fixer installed successfully!\n\n  Get started:\n    make-fixer login --token <your-make-api-token>\n\n  Claude Code plugin (optional):\n    claude plugin marketplace add idokraicer/optimate-plugins\n    claude plugin install make-fixer@optimate-plugins\n'"
   },
   "devDependencies": {
     "@types/bun": "^1.3.9"

@@ -14,23 +14,16 @@ bun install -g git+https://github.com/idokraicer/optimate-make-cli.git
 make-fixer login --token <your-token>
 ```
 
-### Claude Code Skill (optional)
+### Claude Code Plugin (optional)
 
-If you use [Claude Code](https://claude.ai/code), install the Make.com skill for AI-assisted scenario editing:
-
-```bash
-# Clone the skill into your project
-git clone https://github.com/idokraicer/optimate-plugins.git /tmp/optimate-plugins
-cp -r /tmp/optimate-plugins/plugins/make-fixer/skills/make-fixer .claude/skills/
-rm -rf /tmp/optimate-plugins
-```
-
-Or add the full plugin marketplace:
+If you use [Claude Code](https://claude.ai/code), install the Make.com plugin for AI-assisted scenario editing:
 
 ```bash
-# In your project directory
-git submodule add https://github.com/idokraicer/optimate-plugins.git .optimate-plugins
-cp -r .optimate-plugins/plugins/make-fixer/skills/make-fixer .claude/skills/
+# Add the Optimate marketplace
+claude plugin marketplace add idokraicer/optimate-plugins
+
+# Install the make-fixer plugin
+claude plugin install make-fixer@optimate-plugins
 ```
 
 ## Usage
