@@ -27,7 +27,7 @@ program
 // --- login command ---
 program
   .command("login")
-  .description("Save your Make.com API token to ~/.make-fixer/.env")
+  .description("Save your Make.com API token globally to ~/.make-fixer/.env (no local .env needed)")
   .option("--token <token>", "API token (will prompt if not provided)")
   .option("--base-url <url>", "Make.com base URL (default: https://eu1.make.com)")
   .action(async (opts) => {
@@ -56,7 +56,8 @@ program
     }
 
     await Bun.write(GLOBAL_ENV_PATH, content);
-    console.log(`Saved API token to ${GLOBAL_ENV_PATH}`);
+    console.log(`Saved API token to global config: ${GLOBAL_ENV_PATH}`);
+    console.log("All make-fixer commands will use this token automatically. No local .env file is needed.");
   });
 
 // --- fetch command ---
@@ -466,8 +467,8 @@ async function createClient(baseUrlOverride?: string): Promise<MakeApiClient> {
   const baseUrl = baseUrlOverride || process.env.MAKE_BASE_URL || globalEnv.MAKE_BASE_URL || "https://eu1.make.com";
 
   if (!token) {
-    console.error("Error: MAKE_API_TOKEN not found.");
-    console.error("Run: make-fixer login --token <your-token>");
+    console.error("Error: MAKE_API_TOKEN not found. Run: make-fixer login --token <your-token>");
+    console.error("This saves the token globally to ~/.make-fixer/.env — do NOT create a local .env file.");
     process.exit(1);
   }
 

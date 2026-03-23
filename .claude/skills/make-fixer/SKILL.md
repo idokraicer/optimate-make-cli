@@ -1,12 +1,28 @@
 ---
 name: make-fixer
-description: Edit Make.com scenario blueprints. Use when the user mentions Make.com scenarios, blueprints, modules, or automation editing.
+description: Fetches, analyzes, edits, builds, and pushes Make.com (formerly Integromat) scenario blueprints via the make-fixer CLI. Use when the user mentions Make.com scenarios, blueprints, modules, automation workflows, routers, webhooks, operations cost, or wants to create, debug, optimize, or improve any Make.com automation. Also use when the user asks about Make.com inline functions, expressions, formatDate, parseDate, ifempty, switch, get, map, or any Make.com function syntax — load FUNCTIONS_REFERENCE.md for the complete verified reference. Covers blueprint JSON structure, module mapper formats, variable patterns (Set/Get), error handlers, filters, cost optimization, and community best practices (BEST_PRACTICES.md). This skill and its bundled sub-files are the primary source of truth for all Make.com work.
 user-invocable: true
 ---
 
-# Make.com Scenario Editor
+# Make.com Scenario Editor & Builder
 
-You can fetch, edit, validate, and push Make.com scenario blueprints using the `make-fixer` CLI.
+You can fetch, edit, validate, and push Make.com scenario blueprints using the `make-fixer` CLI. You can also design new scenarios from scratch through collaborative brainstorming.
+
+## Bundled Reference Files — Load On Demand
+
+This skill includes sub-files with deep reference material. **Read them when needed:**
+
+- **[FUNCTIONS_REFERENCE.md](FUNCTIONS_REFERENCE.md)** — Complete catalog of all Make.com inline functions (70+), date/time formatting/parsing tokens, filter operators, data types, and type coercion rules. **Load this file whenever:**
+  - The user asks about any Make.com function, expression syntax, or formula
+  - You need to write or verify an inline expression in a blueprint
+  - You need date formatting tokens, filter operator codes, or type coercion behavior
+  - You're unsure whether a function exists (this file is the canonical list — if it's not here, it doesn't exist)
+
+- **[BEST_PRACTICES.md](BEST_PRACTICES.md)** — Error handling patterns, debugging workflows, testing strategies, naming conventions, architecture patterns (webhook chains, queue-based processing), production settings, AI integration patterns, cost optimization checklist, and data store design. **Load this file whenever:**
+  - Designing a new scenario from scratch
+  - Reviewing or improving an existing scenario's architecture
+  - Adding error handlers or debugging a failing scenario
+  - The user asks about Make.com best practices, patterns, or production readiness
 
 ## Installation
 
@@ -33,25 +49,117 @@ If a command fails with "MAKE_API_TOKEN not found", ask the user for their token
 
 ## Workflow
 
-When the user provides a scenario ID or URL, immediately run these steps without waiting:
+<HARD-GATE>
+Do NOT edit the blueprint, push changes, or take any implementation action until you have presented a plan of changes and the user has approved it. This applies to EVERY scenario regardless of perceived simplicity.
+</HARD-GATE>
 
-1. **Fetch and analyze in one go:**
-   ```bash
-   make-fixer fetch -s <ID> && make-fixer analyze -s <ID> --local
-   ```
-   This saves the blueprint to `blueprints/<id>.json` and prints issues.
+**URLs are supported directly.** You can pass a full Make.com URL to `-s` — the zone and scenario ID are auto-detected:
+```bash
+make-fixer fetch -s "https://eu2.make.com/1490053/scenarios/8268971/edit"
+```
+This works with all zones (eu1, eu2, us1, us2, etc.). Bare scenario IDs still work and use the globally configured zone.
 
-2. **Read** the blueprint file to understand the scenario: `blueprints/<id>.json`
+### Determine Mode
 
-3. **Edit** the file directly using your Edit tool
+Based on what the user provides, choose the right starting point:
 
-4. **Validate** changes: `make-fixer validate -s <id>`
-   Shows diff vs remote (added/removed/modified modules, issue count)
+- **Existing scenario** (ID or URL provided): Start at Phase 1 — Gather Context
+- **New scenario idea** (description of what they want to build): Start at Phase 2 — Brainstorm & Clarify
+- **Vague request** ("help me with my automations", "I need a Make scenario"): Start at Phase 2 — Brainstorm & Clarify
 
-5. **Push** when ready: `make-fixer push -s <id> --yes`
-   Always ask the user for confirmation before pushing
+### Phase 1: Gather Context (existing scenarios)
 
-**To extract a scenario ID from a Make.com URL:** the ID is the number after `/scenarios/` — e.g. `https://eu1.make.com/303722/scenarios/4227637/edit` → scenario ID is `4227637`.
+When the user provides a scenario ID or URL — immediately fetch and analyze:
+
+```bash
+make-fixer fetch -s <ID-or-URL> && make-fixer analyze -s <ID> --local
+```
+
+Then **read** the blueprint file (`blueprints/<id>.json`) to understand the scenario structure: what modules exist, how they connect, what the scenario does, and what issues were found.
+
+Present a brief summary to the user:
+- Scenario name and what it does (1-2 sentences)
+- Module count and flow structure (linear, branching, etc.)
+- Issues found by `analyze` (if any)
+- **Proactive improvement suggestions** (see below)
+
+#### Proactive Improvement Suggestions
+
+After analyzing a scenario, always look for and suggest improvements — even if the user didn't ask. Present these as observations, not demands:
+
+- **Cost optimization**: Modules that could be consolidated, redundant steps, logic that could be combined into fewer modules. Every module costs operations.
+- **Missing error handlers**: Modules making external API calls without `onerror` handlers
+- **Fragile patterns**: Hardcoded values that should use variables, missing `ifempty` fallbacks on fields that could be null
+- **Naming**: Modules with default names that don't describe what they do
+- **Structure**: Overly complex routing that could be simplified, unnecessary intermediate modules
+- **Reliability**: Missing retry logic, no fallback paths for critical operations
+
+Frame suggestions as: "I also noticed a few things that could be improved — want me to address any of these along with your main request?"
+
+### Phase 2: Brainstorm & Clarify
+
+Ask questions **one at a time** to understand what the user wants to achieve. Prefer multiple-choice questions when possible (using the AskUserQuestion tool), but open-ended is fine too.
+
+**For existing scenarios**, focus on:
+- **What** they want to change and **why**
+- Which modules or parts of the flow are involved
+- Whether they want to fix existing issues, add new functionality, or restructure
+- Any constraints (e.g. "don't touch module X", "must keep the existing webhook")
+- Whether they also want to address any of the proactive improvement suggestions
+
+**For new scenarios**, focus on:
+- **What triggers the scenario?** (webhook, schedule, watching a service, etc.)
+- **What's the end goal?** What should happen when the scenario runs successfully?
+- **What services/APIs are involved?** (CRM, email, spreadsheets, HTTP APIs, etc.)
+- **What data flows between steps?** What inputs does each step need?
+- **Error handling requirements?** What should happen when something fails?
+- **Volume & frequency?** How often does this run? How many records per run?
+- **Edge cases?** What if a field is empty? What if an API is down?
+
+Use the analysis results and blueprint structure to ask **informed** questions. Reference specific modules by their name/ID when asking about existing scenarios.
+
+**Do NOT batch questions.** One question per message. If a topic needs more exploration, break it into multiple questions.
+
+**Keep asking until you have a clear picture.** Don't rush to propose changes. It's better to ask one more question than to propose the wrong thing.
+
+### Phase 3: Propose Approaches
+
+Once you understand what needs to happen:
+
+1. **Propose 2-3 approaches** when there are meaningful alternatives
+   - Describe each approach briefly
+   - List trade-offs (cost in operations, complexity, reliability, maintainability)
+   - Lead with your recommendation and explain why
+2. For straightforward changes, present a single clear plan
+3. List the specific edits: which modules change, what gets added/removed, what fields are modified
+4. For new scenarios, describe the full flow: trigger → processing → output, with module types
+5. **Always consider cost**: can this be done with fewer modules? Can steps be combined?
+
+Get explicit user approval before proceeding.
+
+### Phase 4: Edit and Validate
+
+Only after the user approves your plan:
+
+1. **Look up module types** if needed: `make-fixer apps <query>` and `make-fixer modules <app>` to find correct module type strings
+2. **Edit** the blueprint file directly using your Edit tool
+3. **Validate** changes: `make-fixer validate -s <id>` — shows diff vs remote (added/removed/modified modules, issue count)
+4. Present the validation results to the user
+5. If validation reveals issues, fix them and re-validate
+
+### Phase 5: Push
+
+1. **Always ask the user** for explicit confirmation before pushing
+2. **Push** when confirmed: `make-fixer push -s <id> --yes`
+3. Confirm success to the user
+
+### Anti-Patterns
+
+**"This Is Too Simple To Need Questions"** — Even "just add an error handler" requires understanding: which modules? what retry settings? should it break or ignore? A quick question prevents wasted work. The questions can be short for simple tasks, but you MUST ask before editing.
+
+**"I'll just add all the modules"** — More modules = more cost. Always look for ways to consolidate. Three similar HTTP calls might be replaceable with one parameterized call inside an iterator. Question every module: is this strictly necessary?
+
+**"The user said what they want, I can just build it"** — The user described their goal, not the design. You need to understand the design before building. Ask about edge cases, error handling, and data flow before proposing a plan.
 
 ## Blueprint Structure
 
@@ -70,7 +178,7 @@ A blueprint is a JSON object:
         "designer": { "x": 0, "y": 0, "name": "Custom Name" }
       },
       "onerror": [
-        { "id": 2, "module": "builtin:Break", "mapper": { "retry": true, "count": 3, "interval": 15 } }
+        { "id": 2, "module": "builtin:Break", "mapper": { "retry": true, "count": 3, "interval": 60 } }
       ],
       "routes": [
         { "flow": [ ... nested modules ... ] }
@@ -86,9 +194,9 @@ A blueprint is a JSON object:
 - **module**: Module type string like `gmail:sendEmail`, `powerlink:plquery`, `http:ActionSendData`
 - **mapper**: Module configuration (API URLs, field mappings, query parameters)
 - **metadata.designer.name**: Custom display name in the Make.com UI
-- **onerror**: Error handler array. Standard break handler: `[{ "id": N, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 15 } }]`. The `interval` is in **minutes** (integer, 1–44640). `count` is number of retries (integer, 1–10). When `mapper` is omitted, Make.com defaults to `count: 3, interval: 15` (3 retries, 15 minutes).
+- **onerror**: Error handler array. Standard break handler: `[{ "id": N, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 1 } }]`. The `interval` is in **minutes** (1 = 1 minute, 60 = 1 hour). When `mapper` is omitted, Make.com defaults to `count: 3, interval: 15`.
 - **routes**: Array of route objects, each containing a `flow` array (for router modules)
-- **filter**: Filter condition between modules. Format: `{ "name": "Filter Name", "conditions": [[{ "a": "{{1.field}}", "b": "value", "o": "equal" }]] }`
+- **filter**: Filter condition between modules. Format: `{ "name": "Filter Name", "conditions": [[{ "a": "{{1.field}}", "b": "value", "o": "equal" }]] }`. Inner array = AND conditions, outer array = OR groups. Available operators: `equal`, `notEqual`, `greater`, `less`, `greaterOrEqual`, `lessOrEqual`, `text:equal`, `text:notEqual`, `text:startsWith`, `text:endsWith`, `text:contains`, `text:notContains`, `text:matches` (regex), `exist`, `notExist`, `array:contains`, `array:notContains`
 
 ### Module types
 
@@ -101,108 +209,187 @@ Common types:
 - Communication: `gmail:sendEmail`, `slack:sendMessage`
 - Routing: `flow:Router` (has `routes` array)
 
-### Variable modules
+### Expression syntax
 
-**Get Multiple Variables** (`util:GetVariables`) — `variables` is an array of **plain strings**:
-```json
-"mapper": { "variables": ["myVar1", "myVar2"] }
-```
+Expressions use `{{...}}` delimiters inside module mapper fields.
 
-**Set Multiple Variables** (`util:SetVariables`) — `variables` is an array of **objects** with `name` and `value`, plus a `scope` field:
-```json
-"mapper": {
-  "scope": "roundtrip",
-  "variables": [
-    { "name": "myVar", "value": "{{1.fieldName}}" }
-  ]
-}
-```
-`scope` is `"roundtrip"` (one cycle) or `"execution"` (entire execution).
-
-**WARNING:** These two formats are different. Do NOT use objects for Get or plain strings for Set. When in doubt, copy the exact format from an existing working module in the blueprint.
+**Critical rules:**
+- **Arguments are separated by semicolons `;`** — NEVER use commas. Example: `{{if(1.status = "active"; "Yes"; "No")}}`
+- **Module output references:** `{{moduleId.fieldName}}` — e.g. `{{1.phone}}`, `{{3.data.email}}`
+- **Nested data:** use dot notation — `{{1.body.results.0.name}}`
+- **Array indexing starts at 1** (not 0) when using `get()` — `{{get(1.items; 1)}}` returns first item
+- **Functions can be nested:** `{{upper(substring(1.name; 0; 1))}}` — uppercase first letter
+- **`now` and `timestamp` are variables, NOT functions** — write `{{now}}` not `{{now()}}`
+- **Comparison operators in expressions:** `=`, `!=`, `<`, `>`, `<=`, `>=`
+- **Logical operators:** `and`, `or`, `not`
+- **Arithmetic:** `+`, `-`, `*`, `/`, `%`
 
 ### Variable references
 
 Modules reference other modules' output with `{{moduleId.fieldName}}`:
 - `{{1.phone}}` — field `phone` from module #1
-- `{{ifempty(1.phone; "")}}` — with fallback
+- `{{ifempty(1.phone; 0121231234)}}` — with fallback
 
-### Branch scope — CRITICAL
+### `ifempty` fallback values
 
-Each route of a Router is an independent execution branch. **Modules in different routes cannot see each other's output.**
+`ifempty` is used to prevent null/empty values from breaking API calls or queries. The fallback must:
+1. **Match the data type of the field** — an email field gets a fake email, a phone field gets a fake phone number, etc.
+2. **Never actually match a real record** — the purpose is to let the query run and return zero results.
+3. **Never use quoted strings for numeric-like fields** — quotes break most APIs. Write `0121231234` not `"0121231234"`.
+4. **Be a realistic-looking value** — not random gibberish, not empty strings, not single characters.
 
+Examples:
+- Email field: `{{ifempty(6.email; nomatch@invalid.test)}}`
+- Phone field: `{{ifempty(6.phone; 0121231234)}}`
+- ID/UUID field: generate a random UUID for each `ifempty` — e.g. `{{ifempty(6.id; f47ac10b-58cc-4372-a567-0e02b2c3d479)}}`. Never reuse the same UUID across different `ifempty` calls.
+
+### Set/Get Variables
+
+There are 4 variable modules — use them correctly:
+
+**Set Variable** (`util:SetVariable2`) — sets a single variable:
+```json
+{ "mapper": { "name": "myVar", "scope": "roundtrip", "value": "{{1.someField}}" } }
 ```
-#5 (upstream)
-  ↓
-[Router]
-  ├─ Route 1: #10 → #11          ← #10 output visible only here
-  ├─ Route 2: filter {{10.body.x}}  ← BROKEN: #10 is in Route 1, invisible here
-  └─ Route 3: (continue)
-       ↓
-      #20 (downstream)            ← {{5.x}} works, {{10.x}} does NOT
+
+**Set Multiple Variables** (`util:SetVariables`) — sets multiple variables at once:
+```json
+{ "mapper": { "variables": [{ "name": "x", "value": "{{1.field1}}" }, { "name": "y", "value": "{{1.field2}}" }], "scope": "roundtrip" } }
 ```
 
-Only **upstream (pre-router)** data is accessible in all routes and downstream. To share data produced inside a route, use SetVariable in the route and GetVariable after the router converges.
+**Get Variable** (`util:GetVariable2`) — retrieves a single variable:
+```json
+{ "mapper": { "name": "myVar" } }
+```
+
+**Get Multiple Variables** (`util:GetVariables`) — retrieves multiple variables. **Variables are plain strings, NOT objects:**
+```json
+{ "mapper": { "variables": ["x", "y"] } }
+```
+
+**Variable lifetime (`scope`):**
+- `"roundtrip"` = **One Cycle** — persists for one cycle of the scenario
+- `"execution"` = **One Execution** — persists for the entire scenario execution
+
+**Important behavior:** Variables with `"roundtrip"` scope do NOT reset between iterator iterations. They persist until explicitly overwritten. If you need per-iteration isolation, use a different pattern (e.g., inline expressions or aggregators).
+
+**Referencing variable output in downstream modules:**
+- `util:GetVariables` (multiple): outputs use variable names — `{{moduleId.myVarName}}`
+- `util:GetVariable2` (single): output is always named `value` — `{{moduleId.value}}`
+
+**Cost:** Prefer multi-variable modules. `util:SetVariables` with 5 vars = **1 operation**. Five `util:SetVariable2` = **5 operations**.
+
+**Variable naming:** Case-sensitive (`"myVar"` and `"myvar"` are different). Literal strings only — expressions NOT supported in name fields. Typos between Set and Get cause **silent null returns** (no error thrown).
+
+**When to use Set/Get Variables vs inline expressions:**
+- Use variables when you need to **pass data between different routes** (after a Router)
+- Use variables when a value is **computed once but referenced many times** across distant modules
+- Use **inline expressions** (`{{1.field}}`) when data flows linearly — direct module references are simpler, cheaper (no extra module), and clearer
+
+### Inline functions quick reference
+
+<HARD-RULE>
+**NEVER fabricate, guess, or invent inline functions.** If you're unsure whether a function exists, check [FUNCTIONS_REFERENCE.md](FUNCTIONS_REFERENCE.md) — it is the canonical list. If a function is not listed there, it does not exist. There is no `dateDifference`, `startOfDay`, `endOfDay`, `toBoolean`, `toNumber`, `log`, `ln`, or `values` function.
+</HARD-RULE>
+
+For the **complete function catalog** (70+ functions with signatures, parameters, return types, date/time tokens, filter operators, data types, and type coercion rules), read [FUNCTIONS_REFERENCE.md](FUNCTIONS_REFERENCE.md).
+
+**Most-used functions** (see FUNCTIONS_REFERENCE.md for full list):
+
+| Category | Key functions |
+|----------|--------------|
+| **Control flow** | `if`, `ifempty`, `switch`, `coalesce` |
+| **Collections** | `get`, `pick`, `omit`, `keys`, `map`, `toArray`, `toCollection` |
+| **Strings** | `contains`, `replace`, `split`, `join`, `substring`, `trim`, `lower`, `upper`, `length`, `toString`, `indexOf` |
+| **Arrays** | `map`, `join`, `merge`, `flatten`, `sort`, `first`, `last`, `length`, `add`, `remove`, `deduplicate`, `slice` |
+| **Math** | `round`, `ceil`, `floor`, `abs`, `sum`, `max`, `min`, `formatNumber`, `parseNumber` |
+| **Dates** | `formatDate`, `parseDate`, `addDays`, `addHours`, `addMinutes`, `addMonths`, `setDate`, `setDay` |
+
+**Variables (no parentheses):** `now`, `timestamp`, `random`, `pi`
+
+**Special values:** `true`, `false`, `null`, `emptystring` (forces truly empty output — not `""`, not `null`)
 
 ## Rules
 
-1. **Optimize for cost efficiency.** Every module run costs operations and credits. Always build scenarios with the minimum number of modules needed. Consolidate logic where possible, avoid redundant modules, and prefer fewer modules doing more over many modules doing little.
-2. **"Name a run" is the only free module.** The `builtin:NameARun` module costs zero credits/operations. Use it freely for labeling scenario executions — it has no cost impact. All other modules count toward operations.
-3. **Never reuse module IDs.** Check the "Next ID" shown by `fetch` or `validate`.
-4. **Always validate before pushing.** Run `make-fixer validate -s <id>` to check your changes.
-5. **Always ask the user before pushing.** Show them what changed and get explicit confirmation.
-6. **Preserve the `idSequence` field** if present — it is server-managed.
-7. **Error handlers need their own unique IDs** — they are separate modules in the `onerror` array.
-8. **Position modules visually** using `metadata.designer.x` and `metadata.designer.y`. Increment `x` by ~300 for each subsequent module.
-9. **NEVER invent module types.** Only use module types that are confirmed to exist via:
-   - Modules already present in the fetched blueprint (copy their `module` and `version` fields exactly)
-   - Results from `make-fixer apps` / `make-fixer modules` commands
-   - JSON provided by the user (e.g. exported from Make.com)
-   If you need a module type that doesn't appear in any of these sources, **ask the user** to provide the JSON for that module (e.g. by adding it manually in Make.com and re-fetching the blueprint). Never guess module type strings or version numbers.
-10. **Choose the best solution for the problem.** Before building, think about which approach best balances efficiency and best practices given the available modules and tools. Don't default to the most obvious structure — consider alternatives that are simpler, cheaper, or more maintainable. The best solution is one that is both cost-efficient and follows sound design practices.
-11. **Keep scenarios maintainable — avoid excessive routing.** Too many routes create complexity that is very hard to maintain. Clients frequently request changes to modules deep in route branches (leaf modules), and deeply nested or heavily branched scenarios make those changes painful. Prefer flatter, simpler structures when possible. Only add routes when the logic genuinely requires separate execution paths.
-12. **Filter early.** Place filters immediately after the trigger to eliminate irrelevant bundles before they reach expensive downstream modules. Each filtered-out bundle saves all downstream operation costs.
-13. **Move lookups before iterators.** Any module that fetches static or shared data (API lookups, GetVariable, search modules) must run ONCE before the iterator, not inside it. A lookup inside an iterator of N items costs N operations; before the iterator it costs 1.
-14. **Batch writes with aggregators.** Use an Array Aggregator before bulk write endpoints instead of writing records one by one. 100 individual writes = 100 operations; one aggregated batch write = 1–3 operations.
-15. **Use `util:SetVariables` over multiple `util:SetVariable2`.** Setting 3 variables in one `util:SetVariables` module costs 1 operation. Three separate `util:SetVariable2` modules cost 3 operations.
-16. **Prefer webhooks over polling.** Polling triggers consume 1 operation per check even when no new data exists. At 15-minute intervals that is 2,880 wasted operations/month just from the trigger. Webhooks fire only on real events and cost zero when idle.
-17. **Error handler choice matters.** Use `builtin:Break` for transient failures (API errors, rate limits) — it stores as incomplete execution for automatic retry. Use `builtin:Resume` when a fallback value is acceptable and the flow should continue. Use `builtin:Ignore` only for truly optional side effects. For critical modules, add a Slack/email notification module BEFORE the directive on the error route so failures are visible.
-18. **429 rate limit retry pattern.** Place a `builtin:BasicRouter` in the `onerror` array. Route A filters for "429" in the error text and runs: `[Sleep] → [retry clone of original module] → [builtin:Resume]`. Route B (fallback) is `builtin:Break`. The `builtin:Resume` mapper **must replicate every output field** of the errored module, mapping each from the retry module's output (`"fieldName": "{{retryModuleId.fieldName}}"`). Any field omitted from the Resume mapper will be empty downstream. See `BEST_PRACTICES.md` for the full pattern with JSON.
+1. **Never reuse module IDs.** Check the "Next ID" shown by `fetch` or `validate`.
+2. **Always validate before pushing.** Run `make-fixer validate -s <id>` to check your changes.
+3. **Always ask the user before pushing.** Show them what changed and get explicit confirmation.
+4. **Preserve the `idSequence` field** if present — it is server-managed.
+5. **Error handlers need their own unique IDs** — they are separate modules in the `onerror` array.
+6. **Position modules visually** using `metadata.designer.x` and `metadata.designer.y`. Increment `x` by ~300 for each subsequent module.
 
-## Architecture Decisions
+## Native-First Problem Solving
 
-Use this table to choose the right structure before building:
+<HARD-RULE>
+**Exhaust every native Make.com capability before suggesting a Code module.** A Code module is a last resort, not a default answer. When something seems "impossible" natively, that is a signal to think more creatively — not to reach for code.
+</HARD-RULE>
 
-| Pattern | Use When |
-|---------|----------|
-| **Router** | Multiple conditions from the same trigger data; branches share the same payload; logic is related and maintained by one team |
-| **Subscenario** | Same module sequence appears in 2+ scenarios; logic can be expressed as a function with typed inputs/outputs |
-| **Webhook Chain** | Truly async parallel fan-out; child process runs independently and no response is needed from the parent |
-| **Separate Scenario** | Different teams own the branches; different scheduling requirements; fully independent concerns |
+Almost any data transformation, conditional logic, or output shaping can be achieved natively using a combination of inline functions, raw string bodies, and expression composition. The techniques below are your toolkit. Work through all of them before concluding that native is insufficient.
 
-### Variable scope quick reference
+### Native Techniques Checklist
 
-| Scope | Lifetime | Reset behavior |
-|-------|----------|----------------|
-| `roundtrip` | One cycle | Does **NOT** reset between iterator iterations — scoped to the bundle cycle, not the iterator step |
-| `execution` | Entire scenario run | Persists across all bundles, cycles, and iterations |
+Before proposing a Code module, confirm you have considered **every** technique below:
 
-### Data Store vs. Variables
+| Technique | What it unlocks |
+|-----------|----------------|
+| **Raw string body** | HTTP module body set to `Raw` accepts full `{{...}}` expressions, string concatenation (`+`), and conditionals. Unlocks patterns that structured/mapped field mode cannot express. |
+| **String concatenation (`+`)** | Build values character by character — inject quotes, colons, commas, brackets, and entire JSON structures manually. `"\"key\": \"" + {{1.value}} + "\""` |
+| **`emptystring`** | Produces truly zero output — not `""`, not `null`, not whitespace. Use it to make entire lines, keys, or segments disappear. |
+| **`if` + `emptystring`** | Conditionally include or entirely exclude any piece of output: JSON keys, URL parameters, headers, body segments, array elements. The core pattern for conditional structures. |
+| **`ifempty` + `coalesce`** | Fallback chains across multiple possible source fields. `coalesce(1.mobile; 1.phone; 1.altPhone; "no-phone")` |
+| **Nested function composition** | Functions nest to arbitrary depth. A single expression can parse, transform, format, and conditionally output a value. `{{if(length(trim(1.name)) > 0; upper(substring(trim(1.name); 0; 1)) + lower(substring(trim(1.name); 1)); emptystring)}}` |
+| **`switch`** | Replaces multi-branch if/else logic natively. Cleaner than nested `if` for 3+ conditions. |
+| **`omit` / `pick`** | Shape collections without touching individual keys. Pass through an entire object minus sensitive fields, or extract only the fields you need. |
+| **`map` + `join`** | Dynamically build comma-separated lists, query strings, or structured text from arrays. `{{join(map(1.items; "name"); ", ")}}` |
+| **`toArray` + `join`** | Serialize entire collections into structured strings. Convert key-value pairs into URL params, header strings, or custom formats. |
+| **`replace` with regex** | Pattern-based transformations on strings — extract, reformat, strip, or restructure text without code. |
 
-| Need | Use |
-|------|-----|
-| Pass data between modules within a single run | Variable (`execution` scope) |
-| Per-bundle data inside an iterator | Variable (`roundtrip` scope) |
-| State that must survive between runs | Data Store |
-| Deduplication / idempotency across runs | Data Store |
-| Shared config across multiple scenarios | Data Store or Custom Team Variable |
+### Worked Example: Conditional JSON Keys
+
+**Problem:** Build an HTTP request body where some JSON keys should only appear if their value exists. Structured mode always sends every mapped field (as `null` or `""`), but the API rejects unknown or empty keys.
+
+**Naive reaction:** "This requires a Code module to build the JSON dynamically."
+
+**Native solution:** Use Raw body mode with `if` + `emptystring` + string concatenation.
+
+```
+{
+  "name": "{{1.name}}",
+  "email": "{{1.email}}"{{if(length(ifempty(1.phone; emptystring)) > 0; ",\n  \"phone\": \"" + 1.phone + "\""; emptystring)}}{{if(length(ifempty(1.company; emptystring)) > 0; ",\n  \"company\": \"" + 1.company + "\""; emptystring)}}
+}
+```
+
+**How it works:**
+1. `name` and `email` are always present (required fields)
+2. For each optional field: `if` checks whether the value has content
+3. If yes → emits `,"phone": "value"` (including the leading comma)
+4. If no → emits `emptystring` (truly nothing — no comma, no key, no trace)
+5. The result is valid JSON with only the keys that have values
+
+**The pattern:** `{{if(length(ifempty(FIELD; emptystring)) > 0; ",\"KEY\": \"" + FIELD + "\""; emptystring)}}`
+
+This same pattern extends to:
+- **Conditional URL parameters:** `{{if(1.page; "&page=" + 1.page; emptystring)}}`
+- **Conditional headers:** include or exclude entire header lines
+- **Conditional array elements:** build arrays with only populated values
+- **Conditional XML nodes:** same `if` + `emptystring` pattern works for any text format
+
+### When a Code Module IS Justified
+
+Only suggest a Code module when **all three conditions are checked** and at least one applies:
+
+1. **Untrusted data** — The values being inserted could contain characters that break string-built structures (unescaped quotes, backslashes, newlines, unicode). Raw string concatenation with user-generated content risks producing malformed JSON/XML. A Code module with proper `JSON.stringify()` is safer.
+2. **Looping/recursion** — The logic requires iterating in ways Make.com's Iterator + Aggregator pattern cannot handle (e.g., recursive tree traversal, variable-depth nesting, complex accumulation across iterations).
+3. **Unmaintainable complexity** — The expression would exceed ~200 characters or nest more than 4 levels deep, making it unreadable and un-debuggable. At that point, a Code module with comments is more maintainable.
+
+If none of these apply, the answer is native. Go back to the techniques checklist.
 
 ## Common Operations
 
 ### Add error handler to a module
 Edit the module's `onerror` field:
 ```json
-"onerror": [{ "id": NEXT_ID, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 15 } }]
+"onerror": [{ "id": NEXT_ID, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 1 } }]
 ```
 
 ### Rename a module
@@ -215,61 +402,28 @@ Set `metadata.designer.name`:
 Insert into the `flow` array at the desired position with a unique ID.
 
 ### Add a route
-Add an object with a `flow` array to a router module's `routes` array.
+Add an object with a `flow` array to a router module's `routes` array. **Filters go on the first module of each route's `flow` array** — NOT on the router itself. The router's mapper is always `null`.
 
-## App & Module Discovery
-
-Search available apps and their modules to find the correct `module` type strings for blueprints:
-
-```bash
-make-fixer apps <query>          # Search apps by name/label/keywords
-make-fixer modules <app-name>    # List modules for an app (auto-detects version)
+### Quoting strings inside expressions
+Inside `{{...}}`, use single quotes to avoid JSON escaping issues:
+```json
+{ "field": "{{ifempty(1.name; 'Unknown')}}" }
 ```
 
-The blueprint `module` field is `appSlug:moduleName` — e.g. `google-sheets:addRow`, `monday:CreateItemV2`.
+## Cost Optimization Principles
 
-## Generate a Resume Module
+- **Every module run costs operations and credits.** Always build scenarios with the minimum number of modules needed.
+- **"Name a run" (`builtin:NameARun`) is the only free module.** Use it freely for labeling — it has zero cost impact. All other modules count.
+- Consolidate logic where possible. Prefer fewer modules doing more over many modules doing little.
+- When proposing approaches, always include the operation cost comparison (e.g. "Approach A: 5 modules per run, Approach B: 3 modules per run").
+- Actively question every module: is this strictly necessary? Can it be combined with another step?
 
-When implementing the 429 retry pattern, use the `resume` command to generate the `builtin:Resume` JSON automatically instead of writing it by hand:
+## Handling Arguments
 
-```bash
-make-fixer resume -s <scenarioId> --errored <moduleId> --from <retryModuleId> [--id <n>] [--x <n>] [--y <n>]
-```
+When invoked with arguments (`$ARGUMENTS`), determine the starting point:
 
-- `--errored` — ID of the module that can fail (its `metadata.interface` provides the field list)
-- `--from` — ID of the retry clone module (all mapper values reference this module's output)
-- `--id` — Resume module ID (defaults to next available ID in the blueprint)
-- `--x / --y` — Designer position
+**URL or numeric ID?** → Phase 1: `make-fixer fetch -s $ARGUMENTS` then analyze and summarize.
+**Description of what to build?** → Phase 2: Begin brainstorming questions immediately.
+**Both ID and description?** → Fetch first, then use the description to inform your clarifying questions.
 
-The command reads the local blueprint, extracts every output field from the errored module's interface, and produces a complete `builtin:Resume` JSON with the mapper fully populated. `__IMTINDEX__` and `__IMTLENGTH__` are wrapped in backtick syntax automatically.
-
-## Scenario Notes
-
-Notes are **separate from the blueprint** — they're managed via the Make.com API, not stored in the blueprint JSON. Use them to document module purposes, business logic, or implementation details.
-
-```bash
-make-fixer notes -s <scenarioId>                                         # List all notes
-make-fixer notes -s <scenarioId> --add --module 1,2 --content "text"     # Add a note
-```
-
-- `--module` — comma-separated module IDs the note is attached to
-- `--content` — note text (supports HTML: `<br>` for line breaks, `<b>` for bold)
-- Without `--add`, lists all notes with module IDs, content preview, and author
-
-## Make.com Documentation
-
-To fetch LLM-friendly documentation from Make.com's help center, append `.md` to any help page URL:
-
-- **Browser URL:** `https://help.make.com/text-and-binary-functions`
-- **LLM-friendly:** `https://help.make.com/text-and-binary-functions.md`
-
-Use this when you need to look up module behavior, function references, or any Make.com documentation. The `.md` endpoint returns clean markdown suitable for reading directly.
-
-## Reference Files
-
-- **[FUNCTIONS_REFERENCE.md](FUNCTIONS_REFERENCE.md)** — Complete function catalog (70+ functions), data types, type coercion, filter operators, and date/time tokens. Load this when working with inline functions, data mapping, or filtering.
-- **[BEST_PRACTICES.md](BEST_PRACTICES.md)** — Error handling patterns, debugging workflows, testing strategies, naming conventions, architecture patterns, module types, and cost optimization.
-
-## $ARGUMENTS
-
-If the user provides a scenario ID or description of what to do, start the workflow immediately.
+In all cases, go through the workflow phases. Never skip to editing.
