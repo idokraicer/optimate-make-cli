@@ -137,6 +137,25 @@ export class MakeApiClient {
     return raw.map((mod: unknown) => AppModuleSchema.parse(mod));
   }
 
+  async listOrganizations(): Promise<any[]> {
+    const res = await this.fetchWithBackoff(`${this.baseUrl}/api/v2/organizations`);
+    if (!res.ok) {
+      throw new Error(`Make API list organizations error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return Array.isArray(data.organizations) ? data.organizations : [];
+  }
+
+  async listTeams(organizationId: number): Promise<any[]> {
+    const url = `${this.baseUrl}/api/v2/teams?organizationId=${organizationId}`;
+    const res = await this.fetchWithBackoff(url);
+    if (!res.ok) {
+      throw new Error(`Make API list teams error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return Array.isArray(data.teams) ? data.teams : [];
+  }
+
   async listScenarios(opts: {
     teamId?: number;
     organizationId?: number;

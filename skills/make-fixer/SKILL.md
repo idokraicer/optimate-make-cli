@@ -70,7 +70,9 @@ All commands accept `-s <id-or-url>` to specify a scenario. URLs auto-detect the
 | `notes` | List or add scenario notes | `--add`, `--module <ids>`, `--content <text>` |
 | `apps` | Search Make.com app catalog | `[query]`, `--limit <n>` |
 | `modules` | List modules for an app | `<app-name>`, `--version <n>` |
-| `scenarios` | List scenarios for a team or organization | `-t <teamId>` / `-o <orgId>` / `--from-url <any-make-url>`, `--active`, `--folder`, `--limit`, `--json` |
+| `orgs` | List all organizations the token can access | `--search <term>`, `--base-url <url>`, `--json` |
+| `teams` | List teams within an organization | `-o <orgId>` / `--from-url <url>`, `--search <term>`, `--json` |
+| `scenarios` | List scenarios for a team or organization | `-t <teamId>` / `-o <orgId>` / `--from-url <any-make-url>`, `--active`, `--folder`, `--search <term>`, `--limit`, `--json` |
 | `executions` | List recent executions for a scenario (or fetch one) | `-s <id-or-url>`, `--id <executionId>` (full detail), `--failed`, `--status success\|incomplete\|error\|failed`, `--limit`, `--from <ts>`, `--to <ts>`, `--json` |
 | `failures` | Scan an entire team/org for recently failed executions | `-t <teamId>` / `-o <orgId>` / `--from-url <url>`, `--since 1h\|24h\|7d\|30d`, `--limit <n>` (per scenario), `--include-paused`, `--json` |
 
@@ -92,9 +94,14 @@ make-fixer notes -s <id> --add --module 1,2,3 --content "Fetches customer data f
 # Look up correct module type strings (ALWAYS do this — never guess)
 make-fixer apps <search-query> && make-fixer modules <app-name>
 
+# Discover what the token can see (use this when the user hasn't shared any URL)
+make-fixer orgs                           # all orgs, with their zone
+make-fixer teams -o <ORG_ID>              # teams within an org
+
 # List all scenarios in a team (derive teamId from ANY Make.com URL the user shared)
 make-fixer scenarios --from-url "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
 make-fixer scenarios --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard"
+make-fixer scenarios -o <ORG_ID> --search "webhook"   # filter by name (case-insensitive)
 
 # Recent executions for a scenario + drill into one
 make-fixer executions -s "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit" --limit 10
@@ -131,6 +138,8 @@ Any Make.com URL the user pastes contains the team or organization ID — never 
 | `https://<zone>.make.com/<TEAM_ID>/...` (any team-scoped page) | `teamId` + zone |
 
 Pass any of these to `make-fixer scenarios --from-url <url>` and the CLI auto-parses them. Use `-t <teamId>` or `-o <orgId>` directly only if the user gives you a bare ID.
+
+**When the user hasn't shared a URL at all**, run `make-fixer orgs` to list what the token can access, then `make-fixer teams -o <orgId>` to drill in. Avoid asking the user for IDs they'd have to dig out of the UI.
 
 ## Workflow
 

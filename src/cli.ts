@@ -44,11 +44,13 @@ Tips:
   • Token is stored once at ~/.make-fixer/.env via \`make-fixer login\` and used by all commands.
 
 Common workflows:
+  make-fixer orgs                                        Discover accessible organizations
+  make-fixer teams -o <ORG_ID>                           List teams within an org
+  make-fixer scenarios -o <ORG_ID> --search "<term>"     Find scenarios by name
   make-fixer fetch -s <url>                              Download blueprint locally
   make-fixer analyze -s <id> --local                     Quality report from local file
   make-fixer fix -s <url> --dry-run                      Preview auto-fixes
-  make-fixer scenarios --from-url <any-make-url>         Browse scenarios for a team/org
-  make-fixer executions -s <url> --limit 10              Recent runs (status + ops + duration)
+  make-fixer executions -s <url> --failed                Recent failed runs for a scenario
   make-fixer executions -s <url> --id <executionId>      Full JSON for a single execution
   make-fixer failures --from-url <any-make-url>          Org/team-wide scan for failed runs
 `,
@@ -458,6 +460,7 @@ program
   .option("--from-url <url>", "Derive teamId/orgId + zone from any Make.com URL — scenario URL (https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit) or organization URL (https://<zone>.make.com/organization/<ORG_ID>/dashboard)")
   .option("--active", "Only active scenarios")
   .option("--folder <id>", "Filter by folder ID", toInt)
+  .option("--search <term>", "Filter results by name (case-insensitive substring match)")
   .option("--limit <n>", "Max scenarios to return", toInt, 50)
   .option("--base-url <url>", "Make.com base URL (skips zone discovery)")
   .option("--json", "Output as JSON")
@@ -482,7 +485,7 @@ program
     }
 
     const client = await createClient(baseUrl);
-    const scenarios = await client.listScenarios({
+    let scenarios = await client.listScenarios({
       teamId,
       organizationId,
       isActive: opts.active ? true : undefined,
@@ -490,12 +493,18 @@ program
       limit: opts.limit,
     });
 
+    if (opts.search) {
+      const q = opts.search.toLowerCase();
+      scenarios = scenarios.filter((s: any) => s.name?.toLowerCase().includes(q));
+    }
+
     if (opts.json) {
       console.log(JSON.stringify(scenarios, null, 2));
       return;
     }
 
-    console.log(`\n${scenarios.length} scenario(s):\n`);
+    const searchSuffix = opts.search ? ` matching "${opts.search}"` : "";
+    console.log(`\n${scenarios.length} scenario(s)${searchSuffix}:\n`);
     for (const s of scenarios) {
       const status = s.isActive ? "●" : "○";
       const paused = s.isPaused ? " [paused]" : "";
@@ -517,7 +526,112 @@ Examples:
   make-fixer scenarios --from-url "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
   make-fixer scenarios --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard"
   make-fixer scenarios -t <TEAM_ID> --active --limit 100
+  make-fixer scenarios -o <ORG_ID> --search "webhook"        # case-insensitive name filter
   make-fixer scenarios -o <ORG_ID> --json | jq '.[] | {id, name}'
+`,
+  );
+
+// --- orgs command ---
+program
+  .command("orgs")
+  .description("List all Make.com organizations the token can access")
+  .option("--search <term>", "Filter results by name (case-insensitive substring match)")
+  .option("--base-url <url>", "Make.com base URL (default: https://eu1.make.com)")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const client = await createClient(opts.baseUrl);
+    let orgs = await client.listOrganizations();
+
+    if (opts.search) {
+      const q = opts.search.toLowerCase();
+      orgs = orgs.filter((o: any) => o.name?.toLowerCase().includes(q));
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify(orgs, null, 2));
+      return;
+    }
+
+    const searchSuffix = opts.search ? ` matching "${opts.search}"` : "";
+    console.log(`\n${orgs.length} organization(s)${searchSuffix}:\n`);
+    for (const o of orgs) {
+      const zone = o.zone ? ` [${o.zone}]` : "";
+      console.log(`  #${o.id}  ${o.name}${zone}`);
+    }
+    console.log("");
+  })
+  .addHelpText(
+    "after",
+    `
+Lists every organization the configured token can access. Each row shows the orgId
+(pass to other commands via -o) and the zone (each org lives in exactly one zone).
+
+Note: the token only sees orgs in zones where it was issued. If you have orgs in
+multiple zones (eu1, eu2, us1, us2), re-run with --base-url to inspect each zone.
+
+Examples:
+  make-fixer orgs                          # all orgs in default zone
+  make-fixer orgs --search "acme"          # filter by name
+  make-fixer orgs --base-url https://us1.make.com
+  make-fixer orgs --json | jq '.[] | {id, name, zone}'
+`,
+  );
+
+// --- teams command ---
+program
+  .command("teams")
+  .description("List teams within a Make.com organization")
+  .option("-o, --org <id>", "Organization ID", toInt)
+  .option("--from-url <url>", "Derive orgId from any Make.com URL")
+  .option("--search <term>", "Filter results by name (case-insensitive substring match)")
+  .option("--base-url <url>", "Make.com base URL (skips zone discovery)")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    let organizationId: number | undefined = opts.org;
+    let baseUrl: string | undefined = opts.baseUrl;
+
+    if (opts.fromUrl) {
+      const parsed = parseMakeUrl(opts.fromUrl);
+      organizationId ??= parsed.organizationId;
+      baseUrl ??= parsed.baseUrl;
+    }
+
+    if (!organizationId) {
+      console.error("Error: --org <id> or --from-url <url> is required.");
+      console.error("Tip: run `make-fixer orgs` to list accessible organizations.");
+      process.exit(1);
+    }
+
+    const client = await createClient(baseUrl);
+    let teams = await client.listTeams(organizationId);
+
+    if (opts.search) {
+      const q = opts.search.toLowerCase();
+      teams = teams.filter((t: any) => t.name?.toLowerCase().includes(q));
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify(teams, null, 2));
+      return;
+    }
+
+    const searchSuffix = opts.search ? ` matching "${opts.search}"` : "";
+    console.log(`\n${teams.length} team(s) in org ${organizationId}${searchSuffix}:\n`);
+    for (const t of teams) {
+      console.log(`  #${t.id}  ${t.name}`);
+    }
+    console.log("");
+  })
+  .addHelpText(
+    "after",
+    `
+Use this when you have an organizationId but need to find a specific team.
+First run \`make-fixer orgs\` to discover orgIds.
+
+Examples:
+  make-fixer teams -o <ORG_ID>
+  make-fixer teams --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard"
+  make-fixer teams -o <ORG_ID> --search "production"
 `,
   );
 
