@@ -137,6 +137,94 @@ export class MakeApiClient {
     return raw.map((mod: unknown) => AppModuleSchema.parse(mod));
   }
 
+  async listScenarios(opts: {
+    teamId?: number;
+    organizationId?: number;
+    isActive?: boolean;
+    folderId?: number;
+    limit?: number;
+    offset?: number;
+  }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (opts.teamId != null) params.set("teamId", String(opts.teamId));
+    if (opts.organizationId != null) params.set("organizationId", String(opts.organizationId));
+    if (opts.isActive != null) params.set("isActive", String(opts.isActive));
+    if (opts.folderId != null) params.set("folderId", String(opts.folderId));
+    if (opts.limit != null) params.set("pg[limit]", String(opts.limit));
+    if (opts.offset != null) params.set("pg[offset]", String(opts.offset));
+
+    const url = `${this.baseUrl}/api/v2/scenarios?${params.toString()}`;
+    const res = await fetch(url, { headers: this.headers() });
+    if (!res.ok) {
+      throw new Error(`Make API list scenarios error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return Array.isArray(data.scenarios) ? data.scenarios : [];
+  }
+
+  async fetchScenario(scenarioId: number): Promise<any> {
+    const res = await fetch(this.getScenarioUrl(scenarioId), { headers: this.headers() });
+    if (!res.ok) {
+      throw new Error(`Make API fetch scenario error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return data.scenario ?? data;
+  }
+
+  async listExecutions(scenarioId: number, opts?: {
+    from?: string;
+    to?: string;
+    status?: 1 | 2 | 3;
+    limit?: number;
+    offset?: number;
+    sortDir?: "asc" | "desc";
+  }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (opts?.from) params.set("from", opts.from);
+    if (opts?.to) params.set("to", opts.to);
+    if (opts?.status != null) params.set("status", String(opts.status));
+    params.set("pg[limit]", String(opts?.limit ?? 20));
+    if (opts?.offset != null) params.set("pg[offset]", String(opts.offset));
+    params.set("pg[sortBy]", "imtId");
+    params.set("pg[sortDir]", opts?.sortDir ?? "desc");
+
+    const url = `${this.baseUrl}/api/v2/scenarios/${scenarioId}/logs?${params.toString()}`;
+    const res = await this.fetchWithBackoff(url);
+    if (!res.ok) {
+      throw new Error(`Make API list executions error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return Array.isArray(data.scenarioLogs) ? data.scenarioLogs : (Array.isArray(data.logs) ? data.logs : []);
+  }
+
+  /**
+   * Fetch wrapper with automatic exponential backoff on 429 rate limits.
+   * Make.com throttles aggressively at organization level — retries 3 times
+   * with 30s, 60s, 90s delays before giving up.
+   */
+  private async fetchWithBackoff(url: string, init?: RequestInit): Promise<Response> {
+    const headers = { ...(init?.headers ?? {}), ...this.headers() };
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const res = await fetch(url, { ...init, headers });
+      if (res.status !== 429) return res;
+      if (attempt === 3) return res;
+      const wait = (attempt + 1) * 30000;
+      await new Promise((r) => setTimeout(r, wait));
+    }
+    return await fetch(url, { ...init, headers });
+  }
+
+  async fetchExecution(scenarioId: number, executionId: string): Promise<any> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v2/scenarios/${scenarioId}/executions/${encodeURIComponent(executionId)}`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) {
+      throw new Error(`Make API fetch execution error ${res.status}: ${await res.text()}`);
+    }
+    return await res.json();
+  }
+
   async searchApps(query: string, apps?: MakeApp[]): Promise<MakeApp[]> {
     const catalog = apps ?? await this.fetchApps();
     const q = query.toLowerCase();

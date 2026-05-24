@@ -26,14 +26,21 @@ This skill includes sub-files with deep reference material. **Read them when nee
 
 ## Installation
 
-Before first use, check if `make-fixer` is available by running `make-fixer --version`. If the command is not found, install it:
+The `make-fixer` CLI lives in a **separate repo** ([github.com/idokraicer/make-fixer](https://github.com/idokraicer/make-fixer)) and must be installed manually — it is NOT bundled with this plugin.
 
-```bash
-git clone https://github.com/idokraicer/make-fixer.git ~/.make-fixer
-cd ~/.make-fixer && bun install && bun link
-```
+Before first use, check if `make-fixer` is available by running `make-fixer --version`. If the command is not found, walk the user through:
 
-This registers the `make-fixer` command globally. Requires [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`).
+1. **Install Bun** if missing: `curl -fsSL https://bun.sh/install | bash` (then restart shell)
+2. **Clone + link the CLI:**
+   ```bash
+   git clone https://github.com/idokraicer/make-fixer.git ~/.make-fixer
+   cd ~/.make-fixer && bun install && bun link
+   ```
+3. **Verify:** `make-fixer --version`
+
+If `make-fixer: command not found` persists after `bun link`, the user's `~/.bun/bin` is not on PATH — point them to Bun's install docs.
+
+Full setup steps (including how to get a Make.com API token) are in the plugin's [README.md](../../README.md).
 
 ## Setup
 
@@ -47,17 +54,95 @@ Optionally set a custom base URL: `make-fixer login --token <token> --base-url h
 
 If a command fails with "MAKE_API_TOKEN not found", ask the user for their token and run `make-fixer login --token <token>`.
 
+## CLI Reference
+
+All commands accept `-s <id-or-url>` to specify a scenario. URLs auto-detect the zone.
+
+| Command | Description | Key Flags |
+|---------|-------------|-----------|
+| `login` | Save API token globally | `--token <token>` (required), `--base-url <url>` |
+| `fetch` | Download blueprint to `blueprints/<id>.json` | `-s <id-or-url>` |
+| `analyze` | Quality report (no changes) | `--local` (use local file), `--json`, `--var <name>` (trace a variable) |
+| `fix` | Auto-fix issues (uses Claude API) | `--dry-run` (preview only), `--only <types>`, `--json` |
+| `validate` | Diff local vs remote blueprint | `--json` |
+| `push` | Upload local blueprint to Make.com | `--yes` (skip confirmation) |
+| `resume` | Generate `builtin:Resume` JSON for 429 retry pattern | `--errored <id>`, `--from <id>`, `--id <id>`, `--x`, `--y` |
+| `notes` | List or add scenario notes | `--add`, `--module <ids>`, `--content <text>` |
+| `apps` | Search Make.com app catalog | `[query]`, `--limit <n>` |
+| `modules` | List modules for an app | `<app-name>`, `--version <n>` |
+| `scenarios` | List scenarios for a team or organization | `-t <teamId>` / `-o <orgId>` / `--from-url <any-make-url>`, `--active`, `--folder`, `--limit`, `--json` |
+| `executions` | List recent executions for a scenario (or fetch one) | `-s <id-or-url>`, `--id <executionId>` (full detail), `--failed`, `--status success\|incomplete\|error\|failed`, `--limit`, `--from <ts>`, `--to <ts>`, `--json` |
+| `failures` | Scan an entire team/org for recently failed executions | `-t <teamId>` / `-o <orgId>` / `--from-url <url>`, `--since 1h\|24h\|7d\|30d`, `--limit <n>` (per scenario), `--include-paused`, `--json` |
+
+### Useful patterns
+
+```bash
+# Trace a specific variable through the scenario
+make-fixer analyze -s <id> --local --var myVariableName
+
+# Preview auto-fixes without pushing
+make-fixer fix -s <url> --dry-run
+
+# Generate Resume module for 429 retry
+make-fixer resume -s <id> --errored 5 --from 20
+
+# Add documentation note to modules
+make-fixer notes -s <id> --add --module 1,2,3 --content "Fetches customer data from CRM"
+
+# Look up correct module type strings (ALWAYS do this — never guess)
+make-fixer apps <search-query> && make-fixer modules <app-name>
+
+# List all scenarios in a team (derive teamId from ANY Make.com URL the user shared)
+make-fixer scenarios --from-url "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
+make-fixer scenarios --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard"
+
+# Recent executions for a scenario + drill into one
+make-fixer executions -s "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit" --limit 10
+make-fixer executions -s <SCENARIO_ID> --failed              # only non-success runs
+make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID>   # full JSON for one run
+
+# Org/team-wide failure sweep (use this when the user asks "what's broken?")
+make-fixer failures --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard" --since 24h
+make-fixer failures --from-url "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit" --since 7d
+```
+
+### Status codes are confusing — read this before reasoning about errors
+
+Make.com's execution `status` field doesn't match the labels in the UI:
+
+| API status | API docs say | Make UI label | What you'll actually see |
+|------------|--------------|---------------|--------------------------|
+| 1 | success | Success | The vast majority of runs |
+| 2 | warning | **Error** | Almost every "error" in the UI is status=2 |
+| 3 | error | Error | Rare — only fatal, unhandled crashes |
+
+**Always use `--failed` (or `--status failed`) when looking for problems**, not `--status error`.
+The `failures` command does this automatically. The status=2/3 distinction is rarely useful;
+treat any non-1 execution as something the user wants to know about.
+
+### Discovering teamId / orgId from URLs
+
+Any Make.com URL the user pastes contains the team or organization ID — never ask the user to look it up manually:
+
+| URL shape | What you can extract |
+|-----------|---------------------|
+| `https://<zone>.make.com/<TEAM_ID>/scenarios/<id>/edit` | `teamId` + `scenarioId` + zone |
+| `https://<zone>.make.com/organization/<ORG_ID>/dashboard` | `organizationId` + zone |
+| `https://<zone>.make.com/<TEAM_ID>/...` (any team-scoped page) | `teamId` + zone |
+
+Pass any of these to `make-fixer scenarios --from-url <url>` and the CLI auto-parses them. Use `-t <teamId>` or `-o <orgId>` directly only if the user gives you a bare ID.
+
 ## Workflow
 
 <HARD-GATE>
 Do NOT edit the blueprint, push changes, or take any implementation action until you have presented a plan of changes and the user has approved it. This applies to EVERY scenario regardless of perceived simplicity.
 </HARD-GATE>
 
-**URLs are supported directly.** You can pass a full Make.com URL to `-s` — the zone and scenario ID are auto-detected:
+**Prefer the full Make.com URL whenever the user provides one.** Passing a URL to `-s` is the most reliable form — the zone and scenario ID are auto-detected and no zone discovery is needed:
 ```bash
-make-fixer fetch -s "https://eu2.make.com/1490053/scenarios/8268971/edit"
+make-fixer fetch -s "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
 ```
-This works with all zones (eu1, eu2, us1, us2, etc.). Bare scenario IDs still work and use the globally configured zone.
+Bare scenario IDs also work: the CLI first tries the configured zone, then auto-probes the other known zones (eu1, eu2, us1, us2) on 401/404 and caches the discovered zone per scenario in `~/.make-fixer/.zones.json`. If you already have a URL in context, pass it to skip the discovery round-trips.
 
 ### Determine Mode
 
@@ -91,8 +176,10 @@ After analyzing a scenario, always look for and suggest improvements — even if
 - **Missing error handlers**: Modules making external API calls without `onerror` handlers
 - **Fragile patterns**: Hardcoded values that should use variables, missing `ifempty` fallbacks on fields that could be null
 - **Naming**: Modules with default names that don't describe what they do
+- **Missing documentation**: Complex modules (HTTP, Code, routers, iterators) without sticky notes — fix with `make-fixer notes --add`, NOT by editing the blueprint
 - **Structure**: Overly complex routing that could be simplified, unnecessary intermediate modules
 - **Reliability**: Missing retry logic, no fallback paths for critical operations
+- **If-else opportunity**: Routers where only one branch should run could be replaced with If-else + Merge (see below)
 
 Frame suggestions as: "I also noticed a few things that could be improved — want me to address any of these along with your main request?"
 
@@ -141,7 +228,7 @@ Get explicit user approval before proceeding.
 
 Only after the user approves your plan:
 
-1. **Look up module types** if needed: `make-fixer apps <query>` and `make-fixer modules <app>` to find correct module type strings
+1. **Look up module types**: `make-fixer apps <query>` and `make-fixer modules <app>` to find correct module type strings. **Always look up — never guess module type strings from memory.**
 2. **Edit** the blueprint file directly using your Edit tool
 3. **Validate** changes: `make-fixer validate -s <id>` — shows diff vs remote (added/removed/modified modules, issue count)
 4. Present the validation results to the user
@@ -153,6 +240,35 @@ Only after the user approves your plan:
 2. **Push** when confirmed: `make-fixer push -s <id> --yes`
 3. Confirm success to the user
 
+### Module Documentation — Use `make-fixer notes`, NOT Blueprint Edits
+
+<HARD-RULE>
+**Notes are NOT part of the blueprint JSON.** They are a separate Make.com API resource attached to a scenario, displayed as sticky-note annotations on modules in the UI. You CANNOT add, edit, or remove notes by editing `blueprints/<id>.json` — there is no `notes` field, `description` field, or `documentation` field on a module that controls this. Any attempt to add documentation by editing the blueprint will be silently ignored on push.
+
+**The ONLY way to manage notes is the `make-fixer notes` command.** This applies whenever the user (or your own proactive suggestion) involves:
+- Documenting what a module does
+- Adding/updating sticky notes or comments on modules
+- Resolving an `analyze` issue of type "missing documentation"
+- Annotating routes, branches, or groups of modules
+</HARD-RULE>
+
+**List existing notes** (always do this first before adding — avoids duplicates):
+```bash
+make-fixer notes -s <id-or-url>
+```
+
+**Add a note** to one or more modules:
+```bash
+make-fixer notes -s <id> --add --module 1,2,3 --content "Fetches customer data from CRM and normalizes phone numbers"
+```
+
+- `--module` takes comma-separated module IDs. A single note can attach to multiple modules (it spans them visually in the UI).
+- `--content` supports HTML — use `<br>` for line breaks, `<b>...</b>` for bold, etc.
+- Notes are pushed to Make.com immediately — there is no separate `push` step for notes, and `validate` does NOT diff notes.
+- The blueprint file on disk is irrelevant to notes; you do not need to fetch first to add a note, and adding a note does not change `blueprints/<id>.json`.
+
+**When `analyze` flags missing documentation**, the fix is `make-fixer notes --add`, never a blueprint edit. Confirm the plan with the user (which modules, what content) before running the command — same approval gate as any other change.
+
 ### Anti-Patterns
 
 **"This Is Too Simple To Need Questions"** — Even "just add an error handler" requires understanding: which modules? what retry settings? should it break or ignore? A quick question prevents wasted work. The questions can be short for simple tasks, but you MUST ask before editing.
@@ -160,6 +276,10 @@ Only after the user approves your plan:
 **"I'll just add all the modules"** — More modules = more cost. Always look for ways to consolidate. Three similar HTTP calls might be replaceable with one parameterized call inside an iterator. Question every module: is this strictly necessary?
 
 **"The user said what they want, I can just build it"** — The user described their goal, not the design. You need to understand the design before building. Ask about edge cases, error handling, and data flow before proposing a plan.
+
+**"I'll add documentation by editing the blueprint"** — Notes are NOT in the blueprint JSON. There is no module field that controls sticky-note documentation. Use `make-fixer notes --add` for ALL module documentation — see the "Module Documentation" section above.
+
+**"I know the module type string"** — Never assume module type strings from memory. Apps update their module names. Always run `make-fixer apps <query>` then `make-fixer modules <app>` to get the current, correct type strings.
 
 ## Blueprint Structure
 
@@ -184,30 +304,101 @@ A blueprint is a JSON object:
         { "flow": [ ... nested modules ... ] }
       ]
     }
-  ]
+  ],
+  "metadata": {
+    "scenario": {
+      "sequential": false,
+      "autoCommit": true,
+      "maxErrors": 3,
+      "confidential": false,
+      "freshVariables": false,
+      "dataloss": false
+    }
+  }
 }
 ```
 
 ### Key fields
 
 - **id**: Unique integer. Never reuse. New modules must use the next available ID (shown by `fetch` and `validate` commands).
-- **module**: Module type string like `gmail:sendEmail`, `powerlink:plquery`, `http:ActionSendData`
+- **module**: Module type string like `app:ModuleName`. **Always look up with `make-fixer apps` + `make-fixer modules` — never guess.**
 - **mapper**: Module configuration (API URLs, field mappings, query parameters)
+- **parameters**: Connection IDs and module-level settings (separate from mapper)
 - **metadata.designer.name**: Custom display name in the Make.com UI
 - **onerror**: Error handler array. Standard break handler: `[{ "id": N, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 1 } }]`. The `interval` is in **minutes** (1 = 1 minute, 60 = 1 hour). When `mapper` is omitted, Make.com defaults to `count: 3, interval: 15`.
-- **routes**: Array of route objects, each containing a `flow` array (for router modules)
-- **filter**: Filter condition between modules. Format: `{ "name": "Filter Name", "conditions": [[{ "a": "{{1.field}}", "b": "value", "o": "equal" }]] }`. Inner array = AND conditions, outer array = OR groups. Available operators: `equal`, `notEqual`, `greater`, `less`, `greaterOrEqual`, `lessOrEqual`, `text:equal`, `text:notEqual`, `text:startsWith`, `text:endsWith`, `text:contains`, `text:notContains`, `text:matches` (regex), `exist`, `notExist`, `array:contains`, `array:notContains`
+- **routes**: Array of route objects, each containing a `flow` array (for `builtin:BasicRouter`)
+- **branches**: Array of branch objects (for `builtin:BasicIfElse` — see If-else & Merge section)
+- **filter**: Filter condition between modules. Format: `{ "name": "Filter Name", "conditions": [[{ "a": "{{1.field}}", "b": "value", "o": "equal" }]] }`. Inner array = AND conditions, outer array = OR groups. See filter operators below.
 
-### Module types
+### Filter operators
 
-Excluded from checks (utility): `builtin:*`, `gateway:*`, `json:*`, `tools:*`, `util:*`, `flow:*`, `code:*`
+Standard operators: `equal`, `notEqual`, `greater`, `less`, `greaterOrEqual`, `lessOrEqual`, `text:equal`, `text:notEqual`, `text:startsWith`, `text:endsWith`, `text:contains`, `text:notContains`, `text:matches` (regex), `exist`, `notExist`, `array:contains`, `array:notContains`
 
-Common types:
-- Triggers: `gateway:CustomWebHook`, `google-sheets:watchRows`
-- API calls: `http:ActionSendData`, `http:MakeRequest`
-- CRM: `powerlink:plquery`, `powerlink:createObject`, `powerlink:updateObject`
-- Communication: `gmail:sendEmail`, `slack:sendMessage`
-- Routing: `flow:Router` (has `routes` array)
+**Case-insensitive variants** — append `:ci` to any text operator:
+`text:equal:ci`, `text:notEqual:ci`, `text:contain:ci`, `text:notContain:ci`, `text:startsWith:ci`, `text:endsWith:ci`
+
+**Note:** `text:contain` (not `text:contains`) is the actual operator code for substring matching. Both forms may appear in blueprints.
+
+### Scenario settings (`metadata.scenario`)
+
+The blueprint's `metadata.scenario` object controls execution behavior:
+
+| Setting | Description |
+|---------|-------------|
+| `sequential` | Process bundles one at a time (prevents race conditions in webhook scenarios) |
+| `autoCommit` | Auto-commit after each cycle in multi-cycle runs |
+| `autoCommitTriggerLast` | Auto-commit applies to trigger module as well |
+| `maxErrors` | Consecutive errors before scenario is disabled (instant/webhook scenarios disable after 1st error regardless) |
+| `confidential` | Hide execution data (GDPR/HIPAA — disables debugging) |
+| `freshVariables` | Reset variables at start of each execution |
+| `dataloss` | Allow data loss for uninterrupted throughput |
+| `dlq` | Dead letter queue enabled |
+
+### Module types — builtin only
+
+<HARD-RULE>
+**NEVER hardcode or guess app-specific module type strings** (e.g., `google-sheets:filterRows`, `powerlink:plquery`). Apps change their module names between versions. Always run `make-fixer apps <query>` then `make-fixer modules <app-name>` to get the current correct type string before adding any app module to a blueprint.
+</HARD-RULE>
+
+The only module types you can use from memory are the **builtin** and **utility** modules — these are stable platform primitives:
+
+**Flow control (`builtin:*`):**
+- `builtin:BasicRouter` — router, splits into parallel routes (has `routes` array, `mapper` is always `null`)
+- `builtin:BasicFeeder` — iterator, splits arrays into individual bundles. Mapper: `{"array": "{{...}}"}`
+- `builtin:BasicAggregator` — array aggregator, merges bundles back. Mapper: `{}`, Parameters: `{"feeder": <iterator-module-id>}`
+- `builtin:BasicRepeater` — repeater, runs N times. Mapper: `{"start": "1", "repeats": "5", "step": "1"}`
+- `builtin:BasicIfElse` — if-else conditional routing (see If-else & Merge section below)
+- `builtin:BasicMerge` — merge if-else branches back together (see If-else & Merge section below)
+
+**Error handlers (`builtin:*`):**
+- `builtin:Break` — pause and retry. Mapper: `{"retry": true, "count": 3, "interval": 15}`
+- `builtin:Resume` — continue with fallback values. Mapper maps output fields from retry module.
+- `builtin:Ignore` — skip and continue. Mapper: `{}`
+- `builtin:Commit` — save progress and stop. Mapper: `{}`
+- `builtin:Rollback` — revert ACID changes and stop. Mapper: `{}`
+
+**Utility (`util:*`):**
+- `util:SetVariables` — set multiple variables. Mapper: `{"variables": [{"name": "", "value": ""}], "scope": "roundtrip"}`
+- `util:SetVariable2` — set single variable. Mapper: `{"name": "", "scope": "roundtrip", "value": ""}`
+- `util:GetVariables` — get multiple variables. Mapper: `{"variables": ["varName"]}`
+- `util:GetVariable2` — get single variable. Mapper: `{"name": ""}`
+- `util:FunctionSleep` — delay. Mapper: `{"duration": "1"}` (seconds, max 300)
+- `util:FunctionIncrement` — counter. Parameters: `{"reset": "run"}`
+- `util:FunctionAggregator2` — numeric aggregator (sum/avg). Parameters: `{"fn": "sum", "feeder": 0}`
+- `util:TextAggregator` — text aggregator. Parameters: `{"rowSeparator": "", "feeder": 0}`
+- `util:AggregateAggregator` — table aggregator. Parameters: `{"columnSeparator": "", "rowSeparator": "", "feeder": 0}`
+- `util:Switcher` — switch/pattern matching. Mapper: `{"input": "", "casesTable": [{"pattern": "", "output": ""}], "elseOutput": ""}`
+
+**Other platform modules:**
+- `gateway:CustomWebHook` — instant webhook trigger
+- `gateway:WebhookRespond` — send HTTP response back to webhook caller
+- `json:ParseJSON` — parse JSON string to collection
+- `json:AggregateToJSON` — aggregate bundles into JSON string. Parameters: `{"type": <data-structure-id>, "feeder": <source-module-id>}`
+- `xml:ParseXML` — parse XML string to collection. Mapper: `{"xml": "{{...}}"}`
+- `code:ExecuteCode` — JavaScript code module (last resort — see Native-First section)
+- `placeholder:Placeholder` — empty placeholder module (used in If-else Else routes)
+
+**HTTP modules** have auth-specific variants — the type string changes based on authentication method. Always look up with `make-fixer modules http` to get the exact variant name (e.g., `http:ActionSendData` vs `http:ActionSendDataBasicAuth` vs `http:ActionSendDataAPIKeyAuth`).
 
 ### Expression syntax
 
@@ -305,9 +496,96 @@ For the **complete function catalog** (70+ functions with signatures, parameters
 | **Math** | `round`, `ceil`, `floor`, `abs`, `sum`, `max`, `min`, `formatNumber`, `parseNumber` |
 | **Dates** | `formatDate`, `parseDate`, `addDays`, `addHours`, `addMinutes`, `addMonths`, `setDate`, `setDay` |
 
-**Variables (no parentheses):** `now`, `timestamp`, `random`, `pi`
+**Variables (no parentheses):** `now`, `timestamp`, `random`, `pi`, `newline`
 
-**Special values:** `true`, `false`, `null`, `emptystring` (forces truly empty output — not `""`, not `null`)
+**Special values:** `true`, `false`, `null`, `emptystring` (forces truly empty output — not `""`, not `null`), `newline` (literal line break — useful in `replace(text; newline; "<br />")`)
+
+## If-else & Merge (Open Beta)
+
+The **If-else** module (`builtin:BasicIfElse`) and **Merge** module (`builtin:BasicMerge`) are a new pair for conditional routing where only one branch executes and routes can be reconnected.
+
+### If-else vs Router
+
+| | If-else (`builtin:BasicIfElse`) | Router (`builtin:BasicRouter`) |
+|---|---|---|
+| **Execution** | Runs **only the first matching** condition | Runs **all matching** routes |
+| **Merge back** | Routes can be merged with `builtin:BasicMerge` | Routes **cannot** be reconnected |
+| **Cost** | Uses operations but **no credits** (free) | Uses operations and credits |
+| **Nesting** | Cannot nest Router or another If-else inside | Can nest freely |
+| **Use when** | Exactly one path should run based on conditions | Multiple paths may need to run in parallel |
+
+### If-else blueprint structure
+
+```json
+{
+  "id": 71,
+  "module": "builtin:BasicIfElse",
+  "version": 1,
+  "mapper": null,
+  "filter": null,
+  "branches": [
+    {
+      "type": "condition",
+      "label": "Record Doesn't Exist",
+      "merge": true,
+      "conditions": [[{ "a": "{{13.recordId}}", "o": "notexist" }]],
+      "flow": [
+        { "id": 38, "module": "...", ... }
+      ]
+    },
+    {
+      "type": "else",
+      "label": "",
+      "merge": true,
+      "disabled": false,
+      "flow": [
+        { "id": 72, "module": "placeholder:Placeholder", ... }
+      ]
+    }
+  ]
+}
+```
+
+**Key differences from Router:**
+- Uses `branches` array (not `routes`)
+- Each branch has `type` (`"condition"` or `"else"`), `label`, `conditions`, and `merge` (whether it connects to a Merge module)
+- Conditions live on the **branch object** (not on filters of the first module in the flow)
+- The last branch is always `"type": "else"` — runs if no conditions matched
+- Empty branches use `placeholder:Placeholder` as a "Do Nothing" module
+
+### Merge blueprint structure
+
+```json
+{
+  "id": 73,
+  "module": "builtin:BasicMerge",
+  "version": 1,
+  "mapper": null,
+  "filter": null,
+  "filters": [null, null],
+  "outputs": [
+    {
+      "name": "outputFieldName",
+      "mappings": [
+        "{{38.someField}}",
+        "{{13.someField}}"
+      ]
+    }
+  ]
+}
+```
+
+**Key fields:**
+- `outputs` — array of named output fields. Each output has a `name` and `mappings` array.
+- `mappings` — one entry per branch (in order). Maps the value from whichever branch actually ran.
+- `filters` — one filter per incoming branch (usually `null`).
+- Downstream modules reference merge output as `{{mergeModuleId.outputFieldName}}`.
+
+### When to use If-else + Merge
+
+- **Conditional create-or-update**: Check if record exists → create on one branch, skip on else → merge back to continue with the record ID regardless of which path ran.
+- **Conditional enrichment**: Different API calls based on data type → merge results into a single output for downstream processing.
+- **Replace Router with If-else** when only one branch should ever run (saves operations since Router runs all matching routes).
 
 ## Rules
 
@@ -317,6 +595,7 @@ For the **complete function catalog** (70+ functions with signatures, parameters
 4. **Preserve the `idSequence` field** if present — it is server-managed.
 5. **Error handlers need their own unique IDs** — they are separate modules in the `onerror` array.
 6. **Position modules visually** using `metadata.designer.x` and `metadata.designer.y`. Increment `x` by ~300 for each subsequent module.
+7. **Always look up module type strings** with `make-fixer apps` + `make-fixer modules` before adding app modules. Never guess from memory.
 
 ## Native-First Problem Solving
 
@@ -343,6 +622,7 @@ Before proposing a Code module, confirm you have considered **every** technique 
 | **`map` + `join`** | Dynamically build comma-separated lists, query strings, or structured text from arrays. `{{join(map(1.items; "name"); ", ")}}` |
 | **`toArray` + `join`** | Serialize entire collections into structured strings. Convert key-value pairs into URL params, header strings, or custom formats. |
 | **`replace` with regex** | Pattern-based transformations on strings — extract, reformat, strip, or restructure text without code. |
+| **`newline` variable** | Literal line break for use in `replace`: `replace(text; newline; "<br />")`. Also useful for building multi-line raw bodies. |
 
 ### Worked Example: Conditional JSON Keys
 
@@ -387,10 +667,13 @@ If none of these apply, the answer is native. Go back to the techniques checklis
 ## Common Operations
 
 ### Add error handler to a module
-Edit the module's `onerror` field:
+
+Standard break handler (works for most scenarios including webhooks — Make.com auto-responds `200 Accepted` to webhook callers):
 ```json
 "onerror": [{ "id": NEXT_ID, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 1 } }]
 ```
+
+**Only when the scenario uses `gateway:WebhookRespond` for custom responses** — add a WebhookRespond + Commit in the error handler to return an error response to the caller. See [BEST_PRACTICES.md](BEST_PRACTICES.md) for this pattern and the full error handler decision guide.
 
 ### Rename a module
 Set `metadata.designer.name`:
@@ -404,6 +687,9 @@ Insert into the `flow` array at the desired position with a unique ID.
 ### Add a route
 Add an object with a `flow` array to a router module's `routes` array. **Filters go on the first module of each route's `flow` array** — NOT on the router itself. The router's mapper is always `null`.
 
+### Add an If-else branch
+Add an object to the `branches` array of a `builtin:BasicIfElse` module. Conditions live on the branch object, not on filters. The last branch must always be `"type": "else"`.
+
 ### Quoting strings inside expressions
 Inside `{{...}}`, use single quotes to avoid JSON escaping issues:
 ```json
@@ -413,10 +699,11 @@ Inside `{{...}}`, use single quotes to avoid JSON escaping issues:
 ## Cost Optimization Principles
 
 - **Every module run costs operations and credits.** Always build scenarios with the minimum number of modules needed.
-- **"Name a run" (`builtin:NameARun`) is the only free module.** Use it freely for labeling — it has zero cost impact. All other modules count.
+- **Free modules (operations but no credits):** `builtin:BasicIfElse`, `builtin:BasicMerge`, `scenario-service:NameExecution` ("Name a Run"). Use these freely.
 - Consolidate logic where possible. Prefer fewer modules doing more over many modules doing little.
 - When proposing approaches, always include the operation cost comparison (e.g. "Approach A: 5 modules per run, Approach B: 3 modules per run").
 - Actively question every module: is this strictly necessary? Can it be combined with another step?
+- **Prefer If-else over Router** when only one branch should run — Router executes all matching routes (wasting operations on unused branches).
 
 ## Handling Arguments
 

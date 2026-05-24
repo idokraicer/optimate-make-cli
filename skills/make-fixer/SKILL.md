@@ -70,6 +70,9 @@ All commands accept `-s <id-or-url>` to specify a scenario. URLs auto-detect the
 | `notes` | List or add scenario notes | `--add`, `--module <ids>`, `--content <text>` |
 | `apps` | Search Make.com app catalog | `[query]`, `--limit <n>` |
 | `modules` | List modules for an app | `<app-name>`, `--version <n>` |
+| `scenarios` | List scenarios for a team or organization | `-t <teamId>` / `-o <orgId>` / `--from-url <any-make-url>`, `--active`, `--folder`, `--limit`, `--json` |
+| `executions` | List recent executions for a scenario (or fetch one) | `-s <id-or-url>`, `--id <executionId>` (full detail), `--failed`, `--status success\|incomplete\|error\|failed`, `--limit`, `--from <ts>`, `--to <ts>`, `--json` |
+| `failures` | Scan an entire team/org for recently failed executions | `-t <teamId>` / `-o <orgId>` / `--from-url <url>`, `--since 1h\|24h\|7d\|30d`, `--limit <n>` (per scenario), `--include-paused`, `--json` |
 
 ### Useful patterns
 
@@ -88,7 +91,46 @@ make-fixer notes -s <id> --add --module 1,2,3 --content "Fetches customer data f
 
 # Look up correct module type strings (ALWAYS do this — never guess)
 make-fixer apps <search-query> && make-fixer modules <app-name>
+
+# List all scenarios in a team (derive teamId from ANY Make.com URL the user shared)
+make-fixer scenarios --from-url "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
+make-fixer scenarios --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard"
+
+# Recent executions for a scenario + drill into one
+make-fixer executions -s "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit" --limit 10
+make-fixer executions -s <SCENARIO_ID> --failed              # only non-success runs
+make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID>   # full JSON for one run
+
+# Org/team-wide failure sweep (use this when the user asks "what's broken?")
+make-fixer failures --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard" --since 24h
+make-fixer failures --from-url "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit" --since 7d
 ```
+
+### Status codes are confusing — read this before reasoning about errors
+
+Make.com's execution `status` field doesn't match the labels in the UI:
+
+| API status | API docs say | Make UI label | What you'll actually see |
+|------------|--------------|---------------|--------------------------|
+| 1 | success | Success | The vast majority of runs |
+| 2 | warning | **Error** | Almost every "error" in the UI is status=2 |
+| 3 | error | Error | Rare — only fatal, unhandled crashes |
+
+**Always use `--failed` (or `--status failed`) when looking for problems**, not `--status error`.
+The `failures` command does this automatically. The status=2/3 distinction is rarely useful;
+treat any non-1 execution as something the user wants to know about.
+
+### Discovering teamId / orgId from URLs
+
+Any Make.com URL the user pastes contains the team or organization ID — never ask the user to look it up manually:
+
+| URL shape | What you can extract |
+|-----------|---------------------|
+| `https://<zone>.make.com/<TEAM_ID>/scenarios/<id>/edit` | `teamId` + `scenarioId` + zone |
+| `https://<zone>.make.com/organization/<ORG_ID>/dashboard` | `organizationId` + zone |
+| `https://<zone>.make.com/<TEAM_ID>/...` (any team-scoped page) | `teamId` + zone |
+
+Pass any of these to `make-fixer scenarios --from-url <url>` and the CLI auto-parses them. Use `-t <teamId>` or `-o <orgId>` directly only if the user gives you a bare ID.
 
 ## Workflow
 
@@ -96,11 +138,11 @@ make-fixer apps <search-query> && make-fixer modules <app-name>
 Do NOT edit the blueprint, push changes, or take any implementation action until you have presented a plan of changes and the user has approved it. This applies to EVERY scenario regardless of perceived simplicity.
 </HARD-GATE>
 
-**URLs are supported directly.** You can pass a full Make.com URL to `-s` — the zone and scenario ID are auto-detected:
+**Prefer the full Make.com URL whenever the user provides one.** Passing a URL to `-s` is the most reliable form — the zone and scenario ID are auto-detected and no zone discovery is needed:
 ```bash
-make-fixer fetch -s "https://eu2.make.com/1490053/scenarios/8268971/edit"
+make-fixer fetch -s "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
 ```
-This works with all zones (eu1, eu2, us1, us2, etc.). Bare scenario IDs still work and use the globally configured zone.
+Bare scenario IDs also work: the CLI first tries the configured zone, then auto-probes the other known zones (eu1, eu2, us1, us2) on 401/404 and caches the discovered zone per scenario in `~/.make-fixer/.zones.json`. If you already have a URL in context, pass it to skip the discovery round-trips.
 
 ### Determine Mode
 

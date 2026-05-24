@@ -16,13 +16,43 @@ import { findModuleById, extractInterface, buildResumeModule } from "./utils/res
 const BLUEPRINTS_DIR = "blueprints";
 const GLOBAL_CONFIG_DIR = `${process.env.HOME}/.make-fixer`;
 const GLOBAL_ENV_PATH = `${GLOBAL_CONFIG_DIR}/.env`;
+const ZONE_CACHE_PATH = `${GLOBAL_CONFIG_DIR}/.zones.json`;
+const KNOWN_ZONES = [
+  "https://eu1.make.com",
+  "https://eu2.make.com",
+  "https://us1.make.com",
+  "https://us2.make.com",
+];
+
+const toInt = (v: string) => parseInt(v, 10);
 
 const program = new Command();
 
 program
   .name("make-fixer")
   .description("Analyze and auto-fix Make.com scenario blueprints")
-  .version("0.1.0");
+  .version("0.1.0")
+  .addHelpText(
+    "after",
+    `
+Tips:
+  • Any Make.com URL works in place of an ID — the zone is auto-detected.
+      Scenario URL → teamId + scenarioId:  https://eu2.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit
+      Organization URL → orgId:            https://eu2.make.com/organization/<ORG_ID>/dashboard
+  • Don't have the team ID? Ask the user for any Make.com URL and use
+      \`make-fixer scenarios --from-url <url>\` — the CLI parses teamId/orgId out of it.
+  • Token is stored once at ~/.make-fixer/.env via \`make-fixer login\` and used by all commands.
+
+Common workflows:
+  make-fixer fetch -s <url>                              Download blueprint locally
+  make-fixer analyze -s <id> --local                     Quality report from local file
+  make-fixer fix -s <url> --dry-run                      Preview auto-fixes
+  make-fixer scenarios --from-url <any-make-url>         Browse scenarios for a team/org
+  make-fixer executions -s <url> --limit 10              Recent runs (status + ops + duration)
+  make-fixer executions -s <url> --id <executionId>      Full JSON for a single execution
+  make-fixer failures --from-url <any-make-url>          Org/team-wide scan for failed runs
+`,
+  );
 
 // --- login command ---
 program
@@ -67,7 +97,7 @@ program
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .action(async (opts) => {
     const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await createClient(baseUrl);
+    const client = await resolveClient(scenarioId, baseUrl);
     console.log(`Fetching scenario ${scenarioId}...`);
 
     const { blueprint } = await client.fetchBlueprint(scenarioId);
@@ -97,7 +127,7 @@ program
     if (opts.local) {
       blueprint = await readLocalBlueprint(scenarioId);
     } else {
-      const client = await createClient(baseUrl);
+      const client = await resolveClient(scenarioId, baseUrl);
       console.log(`Fetching scenario ${scenarioId}...`);
       const fetched = await client.fetchBlueprint(scenarioId);
       blueprint = fetched.blueprint;
@@ -127,7 +157,7 @@ program
   .option("--json", "Output as JSON")
   .action(async (opts) => {
     const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await createClient(baseUrl);
+    const client = await resolveClient(scenarioId, baseUrl);
     console.log(`Fetching scenario ${scenarioId}...`);
 
     const { blueprint } = await client.fetchBlueprint(scenarioId);
@@ -186,7 +216,7 @@ program
   .option("--json", "Output as JSON")
   .action(async (opts) => {
     const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await createClient(baseUrl);
+    const client = await resolveClient(scenarioId, baseUrl);
     const local = await readLocalBlueprint(scenarioId);
 
     console.log(`Fetching remote scenario ${scenarioId}...`);
@@ -229,7 +259,7 @@ program
   .option("--yes", "Skip confirmation prompt")
   .action(async (opts) => {
     const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await createClient(baseUrl);
+    const client = await resolveClient(scenarioId, baseUrl);
     const local = await readLocalBlueprint(scenarioId);
 
     if (!opts.yes) {
@@ -258,11 +288,11 @@ program
   .command("resume")
   .description("Generate a builtin:Resume module JSON for the 429 retry pattern")
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL (reads local blueprint)")
-  .requiredOption("--errored <id>", "ID of the module that can fail (provides interface fields)", parseInt)
-  .requiredOption("--from <id>", "ID of the retry clone module (fields will be mapped from this module)", parseInt)
-  .option("--id <id>", "ID to assign to the Resume module (default: next available ID)", parseInt)
-  .option("--x <n>", "Designer x position", parseInt)
-  .option("--y <n>", "Designer y position", parseInt)
+  .requiredOption("--errored <id>", "ID of the module that can fail (provides interface fields)", toInt)
+  .requiredOption("--from <id>", "ID of the retry clone module (fields will be mapped from this module)", toInt)
+  .option("--id <id>", "ID to assign to the Resume module (default: next available ID)", toInt)
+  .option("--x <n>", "Designer x position", toInt)
+  .option("--y <n>", "Designer y position", toInt)
   .action(async (opts) => {
     const { scenarioId } = parseScenarioInput(opts.scenario);
     const local = await readLocalBlueprint(scenarioId);
@@ -314,14 +344,15 @@ program
   .option("--module <ids>", "Comma-separated module IDs for the note")
   .option("--content <text>", "Note content (supports HTML, e.g. <br> for line breaks)")
   .action(async (opts) => {
+    if (opts.add && (!opts.module || !opts.content)) {
+      console.error("Error: --add requires both --module and --content.");
+      process.exit(1);
+    }
+
     const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await createClient(baseUrl);
+    const client = await resolveClient(scenarioId, baseUrl);
 
     if (opts.add) {
-      if (!opts.module || !opts.content) {
-        console.error("Error: --add requires both --module and --content.");
-        process.exit(1);
-      }
       const moduleIds = opts.module.split(",").map((s: string) => parseInt(s.trim(), 10));
       const note = await client.createNote(scenarioId, moduleIds, opts.content);
       console.log(`Created note #${note.id} on module(s) ${moduleIds.map((id: number) => `#${id}`).join(", ")}`);
@@ -353,7 +384,7 @@ program
   .command("apps")
   .description("Search Make.com app catalog")
   .argument("[query]", "Search query (filters by name, label, or keywords)")
-  .option("--limit <n>", "Maximum results to show", parseInt, 20)
+  .option("--limit <n>", "Maximum results to show", toInt, 20)
   .action(async (query, opts) => {
     const client = await createClient();
     console.log("Fetching app catalog...");
@@ -382,7 +413,7 @@ program
   .command("modules")
   .description("List modules for a Make.com app")
   .argument("<app-name>", "App name/slug (e.g. google-sheets, monday)")
-  .option("--version <n>", "App version (auto-detected if omitted)", parseInt)
+  .option("--version <n>", "App version (auto-detected if omitted)", toInt)
   .action(async (appName, opts) => {
     const client = await createClient();
 
@@ -418,18 +449,350 @@ program
     console.log("");
   });
 
+// --- scenarios command ---
+program
+  .command("scenarios")
+  .description("List Make.com scenarios for a team or organization")
+  .option("-t, --team <id>", "Team ID (or pass any scenario URL via --from-url to auto-derive)", toInt)
+  .option("-o, --org <id>", "Organization ID", toInt)
+  .option("--from-url <url>", "Derive teamId/orgId + zone from any Make.com URL — scenario URL (https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit) or organization URL (https://<zone>.make.com/organization/<ORG_ID>/dashboard)")
+  .option("--active", "Only active scenarios")
+  .option("--folder <id>", "Filter by folder ID", toInt)
+  .option("--limit <n>", "Max scenarios to return", toInt, 50)
+  .option("--base-url <url>", "Make.com base URL (skips zone discovery)")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    let teamId: number | undefined = opts.team;
+    let organizationId: number | undefined = opts.org;
+    let baseUrl: string | undefined = opts.baseUrl;
+
+    if (opts.fromUrl) {
+      const parsed = parseMakeUrl(opts.fromUrl);
+      teamId ??= parsed.teamId;
+      organizationId ??= parsed.organizationId;
+      baseUrl ??= parsed.baseUrl;
+    }
+
+    if (!teamId && !organizationId) {
+      console.error("Error: --team <id>, --org <id>, or --from-url <url> is required.");
+      console.error("Tip: any Make.com URL contains the team or org ID:");
+      console.error("  scenario URL → teamId: https://eu2.make.com/<TEAM_ID>/scenarios/<id>/edit");
+      console.error("  org URL → orgId: https://eu2.make.com/organization/<ORG_ID>/dashboard");
+      process.exit(1);
+    }
+
+    const client = await createClient(baseUrl);
+    const scenarios = await client.listScenarios({
+      teamId,
+      organizationId,
+      isActive: opts.active ? true : undefined,
+      folderId: opts.folder,
+      limit: opts.limit,
+    });
+
+    if (opts.json) {
+      console.log(JSON.stringify(scenarios, null, 2));
+      return;
+    }
+
+    console.log(`\n${scenarios.length} scenario(s):\n`);
+    for (const s of scenarios) {
+      const status = s.isActive ? "●" : "○";
+      const paused = s.isPaused ? " [paused]" : "";
+      const folder = s.folderId ? ` (folder ${s.folderId})` : "";
+      console.log(`  ${status} #${s.id}  ${s.name}${paused}${folder}`);
+    }
+    console.log("");
+  })
+  .addHelpText(
+    "after",
+    `
+How to get a teamId or orgId:
+  Any Make.com URL contains one — no need to ask the user to dig for it.
+    Scenario URL  → teamId:  https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit
+    Org URL       → orgId:   https://<zone>.make.com/organization/<ORG_ID>/dashboard
+  Pass either directly via \`--from-url\` and the CLI will parse it.
+
+Examples:
+  make-fixer scenarios --from-url "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
+  make-fixer scenarios --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard"
+  make-fixer scenarios -t <TEAM_ID> --active --limit 100
+  make-fixer scenarios -o <ORG_ID> --json | jq '.[] | {id, name}'
+`,
+  );
+
+// --- executions command ---
+program
+  .command("executions")
+  .description("List recent executions for a scenario, or fetch one by ID")
+  .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
+  .option("--id <executionId>", "Fetch a single execution by ID (returns full detail)")
+  .option("--limit <n>", "Max executions to list", toInt, 20)
+  .option("--status <s>", "Filter: success (1) | incomplete (2, Make UI calls these 'errors') | error (3, rare fatal) | failed (any non-success)")
+  .option("--failed", "Shortcut for --status failed (anything that isn't a success)")
+  .option("--from <ts>", "Start timestamp (ms)")
+  .option("--to <ts>", "End timestamp (ms)")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await resolveClient(scenarioId, baseUrl);
+
+    if (opts.id) {
+      const execution = await client.fetchExecution(scenarioId, opts.id);
+      console.log(JSON.stringify(execution, null, 2));
+      return;
+    }
+
+    const statusMap: Record<string, 1 | 2 | 3> = {
+      success: 1, ok: 1,
+      incomplete: 2, warning: 2,
+      error: 3, fatal: 3,
+    };
+    const wantFailed = opts.failed || opts.status?.toLowerCase() === "failed";
+    const status = !wantFailed && opts.status ? statusMap[opts.status.toLowerCase()] : undefined;
+    if (opts.status && !status && !wantFailed) {
+      console.error(`Error: --status must be one of: success, incomplete, error, failed.`);
+      process.exit(1);
+    }
+
+    let executions = await client.listExecutions(scenarioId, {
+      limit: opts.limit,
+      status,
+      from: opts.from,
+      to: opts.to,
+    });
+    if (wantFailed) executions = executions.filter((e) => e.status !== 1);
+
+    if (opts.json) {
+      console.log(JSON.stringify(executions, null, 2));
+      return;
+    }
+
+    if (executions.length === 0) {
+      console.log(`No executions found for scenario ${scenarioId}.`);
+      return;
+    }
+
+    const statusLabel = (s: number) => (s === 1 ? "OK" : s === 2 ? "FAIL" : s === 3 ? "ERR!" : String(s ?? "?"));
+    console.log(`\n${executions.length} execution(s) for scenario ${scenarioId}:\n`);
+    for (const e of executions) {
+      const id = e.imtId ?? e.id ?? "?";
+      const st = statusLabel(e.status);
+      const ts = e.timestamp ?? e.executionTime ?? "";
+      const ops = e.operations != null ? `${e.operations} ops` : "";
+      const dur = e.duration != null ? `${e.duration}ms` : "";
+      const name = e.executionName ? ` "${e.executionName}"` : "";
+      console.log(`  [${st.padEnd(4)}] ${id}  ${ts}  ${ops}  ${dur}${name}`);
+    }
+    console.log(`\nFetch details: make-fixer executions -s ${scenarioId} --id <executionId>\n`);
+  })
+  .addHelpText(
+    "after",
+    `
+Output columns (list mode): [STATUS] <executionId>  <timestamp>  <operations>  <duration>  "<runName>"
+  STATUS: OK = success (1), FAIL = incomplete/error (2, what Make's UI calls "errors"), ERR! = fatal (3, rare)
+
+Make.com's status codes are confusing: the UI labels status=2 runs as errors, but the API
+documents 2 as "warning". In practice, --status incomplete (or --failed) is what catches
+the failures you actually care about. --status error (3) almost never matches.
+
+The executionId column is what you pass to \`--id\` to retrieve the full execution JSON
+(module-level inputs/outputs, error details, bundle data).
+
+Examples:
+  make-fixer executions -s "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
+  make-fixer executions -s <SCENARIO_ID> --failed --limit 50          # all non-success runs
+  make-fixer executions -s <SCENARIO_ID> --status incomplete           # status=2 only
+  make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID>
+  make-fixer executions -s <SCENARIO_ID> --from <FROM_MS> --to <TO_MS> --json
+`,
+  );
+
+// --- failures command ---
+program
+  .command("failures")
+  .description("Scan an entire team or organization for recently failed executions")
+  .option("-t, --team <id>", "Team ID", toInt)
+  .option("-o, --org <id>", "Organization ID", toInt)
+  .option("--from-url <url>", "Derive teamId/orgId + zone from any Make.com URL")
+  .option("--since <duration>", "Time window: 1h, 24h, 7d, 30d (default: 7d)", "7d")
+  .option("--limit <n>", "Max executions to inspect per scenario (default: 50)", toInt, 50)
+  .option("--include-paused", "Also scan paused/inactive scenarios (default: active only)")
+  .option("--base-url <url>", "Make.com base URL (skips zone discovery)")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    let teamId: number | undefined = opts.team;
+    let organizationId: number | undefined = opts.org;
+    let baseUrl: string | undefined = opts.baseUrl;
+
+    if (opts.fromUrl) {
+      const parsed = parseMakeUrl(opts.fromUrl);
+      teamId ??= parsed.teamId;
+      organizationId ??= parsed.organizationId;
+      baseUrl ??= parsed.baseUrl;
+    }
+
+    if (!teamId && !organizationId) {
+      console.error("Error: --team <id>, --org <id>, or --from-url <url> is required.");
+      process.exit(1);
+    }
+
+    const sinceMs = parseDuration(opts.since);
+    if (sinceMs == null) {
+      console.error(`Error: --since must look like 1h, 24h, 7d, or 30d. Got: ${opts.since}`);
+      process.exit(1);
+    }
+    const fromTs = String(Date.now() - sinceMs);
+
+    const client = await createClient(baseUrl);
+    const scenarios = await client.listScenarios({
+      teamId,
+      organizationId,
+      isActive: opts.includePaused ? undefined : true,
+      limit: 200,
+    });
+
+    if (!opts.json) {
+      console.error(`Scanning ${scenarios.length} ${opts.includePaused ? "" : "active "}scenarios for failures in the last ${opts.since}...`);
+    }
+
+    const results: Array<{ id: number; name: string; fails: any[]; err?: string }> = [];
+    for (let i = 0; i < scenarios.length; i++) {
+      const s: any = scenarios[i];
+      try {
+        const all = await client.listExecutions(s.id, { limit: opts.limit, from: fromTs });
+        const fails = all.filter((e: any) => e.status !== 1);
+        results.push({ id: s.id, name: s.name, fails });
+      } catch (e) {
+        results.push({ id: s.id, name: s.name, fails: [], err: String(e) });
+      }
+      if (!opts.json && i % 10 === 9) process.stderr.write(".");
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!opts.json) process.stderr.write("\n");
+
+    const failed = results
+      .filter((r) => r.fails.length > 0)
+      .sort((a, b) => b.fails.length - a.fails.length);
+
+    if (opts.json) {
+      console.log(JSON.stringify(failed.map((r) => ({
+        scenarioId: r.id,
+        name: r.name,
+        failureCount: r.fails.length,
+        executions: r.fails.map((e: any) => ({
+          executionId: e.id,
+          imtId: e.imtId,
+          status: e.status,
+          timestamp: e.timestamp,
+          operations: e.operations,
+          duration: e.duration,
+        })),
+      })), null, 2));
+      return;
+    }
+
+    if (failed.length === 0) {
+      console.log(`\n✓ No failures in the last ${opts.since} across ${scenarios.length} scenarios.`);
+      return;
+    }
+
+    const totalFailures = failed.reduce((sum, r) => sum + r.fails.length, 0);
+    console.log(`\n${failed.length} of ${scenarios.length} scenarios had failures (${totalFailures} total) in the last ${opts.since}:\n`);
+
+    for (const r of failed) {
+      const s2 = r.fails.filter((e: any) => e.status === 2).length;
+      const s3 = r.fails.filter((e: any) => e.status === 3).length;
+      const other = r.fails.length - s2 - s3;
+      const breakdown = [
+        s2 ? `${s2} incomplete` : null,
+        s3 ? `${s3} fatal` : null,
+        other ? `${other} other` : null,
+      ].filter(Boolean).join(", ");
+      console.log(`#${r.id}  [${r.fails.length} fails: ${breakdown}]  ${r.name}`);
+      for (const e of r.fails.slice(0, 2)) {
+        console.log(`    ${e.timestamp}  exec=${e.id}`);
+      }
+      if (r.fails.length > 2) console.log(`    ...and ${r.fails.length - 2} more (run: make-fixer executions -s ${r.id} --failed)`);
+    }
+
+    const errored = results.filter((r) => r.err);
+    if (errored.length) {
+      console.error(`\n${errored.length} scenarios could not be queried (likely rate-limited).`);
+    }
+  })
+  .addHelpText(
+    "after",
+    `
+Scans every scenario in a team/org and reports which ones have non-success executions
+in the time window. Uses sequential queries with built-in rate-limit backoff (Make.com
+throttles aggressively at org level).
+
+Examples:
+  make-fixer failures --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard"
+  make-fixer failures --from-url "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit" --since 24h
+  make-fixer failures -o <ORG_ID> --since 30d --include-paused
+  make-fixer failures -t <TEAM_ID> --json | jq '.[] | select(.failureCount > 5)'
+
+Drill into a specific scenario's failures:
+  make-fixer executions -s <SCENARIO_ID> --failed
+`,
+  );
+
+function parseDuration(input: string): number | null {
+  const m = input.match(/^(\d+)\s*([hdwm])$/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  const unit = m[2].toLowerCase();
+  const mult: Record<string, number> = {
+    h: 3600_000,
+    d: 86_400_000,
+    w: 7 * 86_400_000,
+    m: 30 * 86_400_000,
+  };
+  return n * mult[unit];
+}
+
 // --- helpers ---
 
-function parseScenarioInput(input: string): { scenarioId: number; baseUrl?: string } {
-  // Try parsing as a Make.com URL first
-  const urlMatch = input.match(
-    /^https?:\/\/((?:eu|us)\d+\.make\.com)\/\d+\/scenarios\/(\d+)/
-  );
-  if (urlMatch) {
+/**
+ * Extract teamId / organizationId / scenarioId / baseUrl from any Make.com URL.
+ * Handles scenario URLs (`/<teamId>/scenarios/<id>/...`) and organization URLs
+ * (`/organization/<orgId>/...`). Returns whatever it can identify.
+ */
+function parseMakeUrl(input: string): {
+  baseUrl?: string;
+  teamId?: number;
+  organizationId?: number;
+  scenarioId?: number;
+} {
+  const zoneMatch = input.match(/^https?:\/\/((?:eu|us)\d+\.make\.com)(\/.*)?$/);
+  if (!zoneMatch) return {};
+  const baseUrl = `https://${zoneMatch[1]}`;
+  const path = zoneMatch[2] ?? "";
+
+  const orgMatch = path.match(/^\/organization\/(\d+)/);
+  if (orgMatch) return { baseUrl, organizationId: parseInt(orgMatch[1], 10) };
+
+  const scenarioMatch = path.match(/^\/(\d+)\/scenarios\/(\d+)/);
+  if (scenarioMatch) {
     return {
-      scenarioId: parseInt(urlMatch[2], 10),
-      baseUrl: `https://${urlMatch[1]}`,
+      baseUrl,
+      teamId: parseInt(scenarioMatch[1], 10),
+      scenarioId: parseInt(scenarioMatch[2], 10),
     };
+  }
+
+  const teamOnlyMatch = path.match(/^\/(\d+)(?:\/|$)/);
+  if (teamOnlyMatch) return { baseUrl, teamId: parseInt(teamOnlyMatch[1], 10) };
+
+  return { baseUrl };
+}
+
+function parseScenarioInput(input: string): { scenarioId: number; teamId?: number; baseUrl?: string } {
+  const parsed = parseMakeUrl(input);
+  if (parsed.scenarioId != null) {
+    return { scenarioId: parsed.scenarioId, teamId: parsed.teamId, baseUrl: parsed.baseUrl };
   }
 
   // Otherwise treat as a bare scenario ID
@@ -473,6 +836,111 @@ async function createClient(baseUrlOverride?: string): Promise<MakeApiClient> {
   }
 
   return new MakeApiClient({ token, baseUrl });
+}
+
+async function resolveClient(
+  scenarioId: number,
+  baseUrlOverride?: string,
+): Promise<MakeApiClient> {
+  // If the user passed a full URL, trust the zone from it — no discovery.
+  if (baseUrlOverride) return createClient(baseUrlOverride);
+
+  const globalEnv = await loadGlobalEnv();
+  const token = process.env.MAKE_API_TOKEN || globalEnv.MAKE_API_TOKEN;
+  if (!token) {
+    console.error("Error: MAKE_API_TOKEN not found. Run: make-fixer login --token <your-token>");
+    console.error("This saves the token globally to ~/.make-fixer/.env — do NOT create a local .env file.");
+    process.exit(1);
+  }
+  const preferred =
+    process.env.MAKE_BASE_URL || globalEnv.MAKE_BASE_URL || "https://eu1.make.com";
+
+  const baseUrl = await resolveZone(scenarioId, token, preferred);
+  return new MakeApiClient({ token, baseUrl });
+}
+
+async function resolveZone(
+  scenarioId: number,
+  token: string,
+  preferred: string,
+): Promise<string> {
+  const cache = await loadZoneCache();
+  const cached = cache[scenarioId];
+  if (cached) return cached;
+
+  const tryOrder = [preferred, ...KNOWN_ZONES.filter((z) => z !== preferred)];
+  let firstAuthError: { status: number; body: string } | null = null;
+
+  for (const baseUrl of tryOrder) {
+    const result = await probeScenario(scenarioId, token, baseUrl);
+    if (result.ok) {
+      if (baseUrl !== preferred) {
+        console.error(
+          `ℹ Scenario ${scenarioId} found in ${zoneLabel(baseUrl)} (configured: ${zoneLabel(preferred)}). Caching for next time.`,
+        );
+      }
+      cache[scenarioId] = baseUrl;
+      await saveZoneCache(cache);
+      return baseUrl;
+    }
+    if (result.status === 401 && !firstAuthError) {
+      firstAuthError = { status: result.status, body: result.body };
+    }
+  }
+
+  if (firstAuthError) {
+    console.error(
+      `Error: Make API returned 401 Unauthorized for scenario ${scenarioId} in every zone tried (${KNOWN_ZONES.map(zoneLabel).join(", ")}).`,
+    );
+    console.error(
+      `Your token is likely invalid or scoped to a zone not in the known list. Re-run: make-fixer login --token <token> --base-url <your-zone-url>`,
+    );
+    process.exit(1);
+  }
+
+  console.error(
+    `Error: Scenario ${scenarioId} not found in any known zone (${KNOWN_ZONES.map(zoneLabel).join(", ")}).`,
+  );
+  console.error(
+    `Pass the full Make.com URL instead of the bare ID (e.g. https://eu2.make.com/<team>/scenarios/${scenarioId}/edit) to skip discovery.`,
+  );
+  process.exit(1);
+}
+
+async function probeScenario(
+  scenarioId: number,
+  token: string,
+  baseUrl: string,
+): Promise<{ ok: true } | { ok: false; status: number; body: string }> {
+  try {
+    const res = await fetch(`${baseUrl}/api/v2/scenarios/${scenarioId}`, {
+      headers: { Authorization: `Token ${token}` },
+    });
+    if (res.ok) return { ok: true };
+    const body = await res.text().catch(() => "");
+    return { ok: false, status: res.status, body };
+  } catch (err) {
+    return { ok: false, status: 0, body: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function zoneLabel(baseUrl: string): string {
+  return baseUrl.replace(/^https?:\/\//, "").replace(/\.make\.com$/, "");
+}
+
+async function loadZoneCache(): Promise<Record<string, string>> {
+  const file = Bun.file(ZONE_CACHE_PATH);
+  if (!(await file.exists())) return {};
+  try {
+    return JSON.parse(await file.text());
+  } catch {
+    return {};
+  }
+}
+
+async function saveZoneCache(cache: Record<string, string>): Promise<void> {
+  await ensureDir(GLOBAL_CONFIG_DIR);
+  await Bun.write(ZONE_CACHE_PATH, JSON.stringify(cache, null, 2));
 }
 
 async function ensureDir(dir: string): Promise<void> {
