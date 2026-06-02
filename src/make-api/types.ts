@@ -45,7 +45,7 @@ export const BREAK_DEFAULTS = {
 } as const satisfies z.infer<typeof BreakMapperSchema>;
 
 export const ErrorHandlerSchema: z.ZodType<any> = z.object({
-  id: z.number(),
+  id: z.number().nullable(),
   module: z.string(),
   version: z.number().optional(),
   parameters: z.any().optional(),
@@ -55,7 +55,7 @@ export const ErrorHandlerSchema: z.ZodType<any> = z.object({
 
 export const ModuleSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
-    id: z.number(),
+    id: z.number().nullable(),
     module: z.string(),
     version: z.number().optional(),
     name: z.string().nullable().optional(),
