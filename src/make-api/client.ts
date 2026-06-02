@@ -8,6 +8,7 @@ import {
   type AppModule,
 } from "./types";
 import { BUILTIN_MODULES } from "../data/builtin-modules";
+import { fetchWithRetry } from "./fetch-retry";
 
 export interface MakeApiConfig {
   token: string;
@@ -39,7 +40,7 @@ export class MakeApiClient {
   }
 
   async fetchBlueprint(scenarioId: number): Promise<{ blueprint: Blueprint; raw: any }> {
-    const res = await fetch(this.getBlueprintUrl(scenarioId), {
+    const res = await fetchWithRetry(this.getBlueprintUrl(scenarioId), {
       headers: this.headers(),
     });
     if (!res.ok) {
@@ -66,7 +67,7 @@ export class MakeApiClient {
       blueprint: JSON.stringify(blueprint),
     });
 
-    const res = await fetch(this.getScenarioUrl(scenarioId), {
+    const res = await fetchWithRetry(this.getScenarioUrl(scenarioId), {
       method: "PATCH",
       headers: this.headers(),
       body,
@@ -78,7 +79,7 @@ export class MakeApiClient {
   }
 
   async createNote(scenarioId: number, moduleIds: number[], content: string): Promise<Note> {
-    const res = await fetch(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`, {
+    const res = await fetchWithRetry(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ moduleIds, content }),
@@ -94,7 +95,7 @@ export class MakeApiClient {
 
   async fetchNotes(scenarioId: number): Promise<Note[]> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`, {
+      const res = await fetchWithRetry(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`, {
         headers: this.headers(),
       });
       if (!res.ok) return [];
@@ -111,7 +112,7 @@ export class MakeApiClient {
     const qs = params.toString();
     const url = `${this.baseUrl}/api/v2/imt/apps-meta${qs ? `?${qs}` : ""}`;
 
-    const res = await fetch(url, { headers: this.headers() });
+    const res = await fetchWithRetry(url, { headers: this.headers() });
     if (!res.ok) {
       throw new Error(`Make API error ${res.status}: ${await res.text()}`);
     }
@@ -127,7 +128,7 @@ export class MakeApiClient {
 
     const url = `${this.baseUrl}/api/v2/imt/apps/${encodeURIComponent(appName)}/${version}/modules-with-credentials`;
 
-    const res = await fetch(url, { headers: this.headers() });
+    const res = await fetchWithRetry(url, { headers: this.headers() });
     if (!res.ok) {
       throw new Error(`Make API error ${res.status}: ${await res.text()}`);
     }
@@ -173,7 +174,7 @@ export class MakeApiClient {
     if (opts.offset != null) params.set("pg[offset]", String(opts.offset));
 
     const url = `${this.baseUrl}/api/v2/scenarios?${params.toString()}`;
-    const res = await fetch(url, { headers: this.headers() });
+    const res = await fetchWithRetry(url, { headers: this.headers() });
     if (!res.ok) {
       throw new Error(`Make API list scenarios error ${res.status}: ${await res.text()}`);
     }
@@ -182,7 +183,7 @@ export class MakeApiClient {
   }
 
   async fetchScenario(scenarioId: number): Promise<any> {
-    const res = await fetch(this.getScenarioUrl(scenarioId), { headers: this.headers() });
+    const res = await fetchWithRetry(this.getScenarioUrl(scenarioId), { headers: this.headers() });
     if (!res.ok) {
       throw new Error(`Make API fetch scenario error ${res.status}: ${await res.text()}`);
     }
@@ -217,24 +218,17 @@ export class MakeApiClient {
   }
 
   /**
-   * Fetch wrapper with automatic exponential backoff on 429 rate limits.
-   * Make.com throttles aggressively at organization level — retries 3 times
-   * with 30s, 60s, 90s delays before giving up.
+   * Fetch wrapper that injects auth headers and rides through Make.com rate
+   * limits via the shared fetchWithRetry helper (429/503, Retry-After aware,
+   * exponential backoff).
    */
   private async fetchWithBackoff(url: string, init?: RequestInit): Promise<Response> {
     const headers = { ...(init?.headers ?? {}), ...this.headers() };
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const res = await fetch(url, { ...init, headers });
-      if (res.status !== 429) return res;
-      if (attempt === 3) return res;
-      const wait = (attempt + 1) * 30000;
-      await new Promise((r) => setTimeout(r, wait));
-    }
-    return await fetch(url, { ...init, headers });
+    return fetchWithRetry(url, { ...init, headers });
   }
 
   async fetchExecution(scenarioId: number, executionId: string): Promise<any> {
-    const res = await fetch(
+    const res = await fetchWithRetry(
       `${this.baseUrl}/api/v2/scenarios/${scenarioId}/executions/${encodeURIComponent(executionId)}`,
       { headers: this.headers() },
     );

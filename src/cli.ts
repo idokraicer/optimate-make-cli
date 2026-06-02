@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 import { MakeApiClient } from "./make-api/client";
+import { fetchWithRetry } from "./make-api/fetch-retry";
 import { BlueprintSchema, type Blueprint } from "./make-api/types";
 import { BUILTIN_MODULE_TEMPLATES } from "./data/builtin-modules";
 import { analyze } from "./analyzer/index";
@@ -1027,7 +1028,7 @@ async function probeScenario(
   baseUrl: string,
 ): Promise<{ ok: true } | { ok: false; status: number; body: string }> {
   try {
-    const res = await fetch(`${baseUrl}/api/v2/scenarios/${scenarioId}`, {
+    const res = await fetchWithRetry(`${baseUrl}/api/v2/scenarios/${scenarioId}`, {
       headers: { Authorization: `Token ${token}` },
     });
     if (res.ok) return { ok: true };
