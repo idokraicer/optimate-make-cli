@@ -12,11 +12,14 @@ import { diffBlueprints } from "./agent/blueprint-editor";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
+import { getGlobalConfigPaths } from "./utils/paths";
 
 const BLUEPRINTS_DIR = "blueprints";
-const GLOBAL_CONFIG_DIR = `${process.env.HOME}/.make-fixer`;
-const GLOBAL_ENV_PATH = `${GLOBAL_CONFIG_DIR}/.env`;
-const ZONE_CACHE_PATH = `${GLOBAL_CONFIG_DIR}/.zones.json`;
+const {
+  configDir: GLOBAL_CONFIG_DIR,
+  envPath: GLOBAL_ENV_PATH,
+  zoneCachePath: ZONE_CACHE_PATH,
+} = getGlobalConfigPaths();
 const KNOWN_ZONES = [
   "https://eu1.make.com",
   "https://eu2.make.com",
