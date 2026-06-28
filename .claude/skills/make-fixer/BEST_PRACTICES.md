@@ -111,6 +111,37 @@ Always add a notification module BEFORE the directive on critical error routes:
 
 The notification module does not need its own error handler unless it itself could fail.
 
+### Error handling in webhook scenarios with custom responses
+
+By default, Make.com instantly returns `200 Accepted` to webhook callers — the caller never waits. **Break works fine in most webhook scenarios.**
+
+The **WebhookRespond + Commit** pattern is only needed when the scenario explicitly uses a `gateway:WebhookRespond` module to send a custom response. In that case, if a module fails *before* the WebhookRespond runs, the caller gets no custom response. To handle this, add a WebhookRespond in the `onerror` chain to return an error response:
+
+```json
+"onerror": [
+  {
+    "id": NEXT_ID,
+    "module": "gateway:WebhookRespond",
+    "version": 1,
+    "mapper": {
+      "body": "{\"error\": \"{{MODULE_ID.error.message}}\", \"execution\": \"{{var.scenario.executionUrl}}\"}",
+      "status": "400",
+      "headers": [{ "key": "Content-Type", "value": "application/json" }]
+    }
+  },
+  {
+    "id": NEXT_ID_PLUS_1,
+    "module": "builtin:Commit",
+    "version": 1,
+    "mapper": {}
+  }
+]
+```
+
+**Use this only when:** the scenario has a `gateway:WebhookRespond` module and the caller depends on receiving a structured response (success or error).
+
+**Otherwise:** Just use `builtin:Break` — the caller already got `200 Accepted` automatically.
+
 ---
 
 ## Debugging Workflow

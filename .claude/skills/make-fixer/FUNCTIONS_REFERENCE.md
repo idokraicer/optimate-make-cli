@@ -96,6 +96,7 @@ Make automatically converts types when there's a mismatch:
 | Variable | Description |
 |----------|-------------|
 | `random` | Pseudo-random float in `[0, 1)`. For integer range: `{{floor(random * (max - min + 1)) + min}}` |
+| `pi` | The constant π (3.14159...) |
 
 ---
 
@@ -160,6 +161,15 @@ Make automatically converts types when there's a mismatch:
 |----------|-------------|
 | `now` | Current date and time (no parentheses) |
 | `timestamp` | Current Unix timestamp in seconds (no parentheses) |
+
+### Global Variables
+
+These variables are available anywhere in expressions (no parentheses):
+
+| Variable | Description |
+|----------|-------------|
+| `newline` | Literal line break character. Use in `replace()` to swap line breaks: `replace(text; newline; "<br />")` |
+| `emptystring` | Truly empty output — not `""`, not `null`. Use to make values disappear entirely. |
 
 ### Useful Date Formulas
 
@@ -350,39 +360,59 @@ function myFunction(param1, param2) {
 Filters are placed between modules to control data flow. Each condition has: operand(s) + operator.
 
 ### Text Operators
+All text codes are lowercase. Append `:ci` for case-insensitive matching (e.g. `text:equal:ci`, `text:contain:ci`).
+
 | Operator | Code | Description |
 |----------|------|-------------|
 | Equal to | `text:equal` | Exact match |
-| Not equal to | `text:notEqual` | Not exact match |
+| Not equal to | `text:notequal` | Not exact match |
 | Contains | `text:contain` | Substring match |
-| Does not contain | `text:notContain` | No substring match |
-| Starts with | `text:startsWith` | Prefix match |
-| Does not start with | `text:notStartsWith` | No prefix match |
-| Ends with | `text:endsWith` | Suffix match |
-| Does not end with | `text:notEndsWith` | No suffix match |
-| Matches pattern (regex) | `text:matches` | Regular expression match |
-| Does not match pattern | `text:notMatches` | No regex match |
+| Does not contain | `text:notcontain` | No substring match |
+| Starts with | `text:startswith` | Prefix match |
+| Ends with | `text:endswith` | Suffix match |
+| Matches pattern (regex) | *(confirm in Make UI — see note)* | Regex match |
 
 ### Numeric Operators
+Use the `number:` prefix — **not** `numeric:`.
+
 | Operator | Code | Description |
 |----------|------|-------------|
-| Equal to | `numeric:equal` | Exact numeric match |
-| Not equal to | `numeric:notEqual` | Not equal |
-| Greater than | `numeric:greater` | `>` |
-| Greater than or equal | `numeric:greaterOrEqual` | `>=` |
-| Less than | `numeric:less` | `<` |
-| Less than or equal | `numeric:lessOrEqual` | `<=` |
+| Equal to | `number:equal` | Exact numeric match |
+| Not equal to | `number:notequal` | Not equal |
+| Greater than | `number:greater` | `>` |
+| Greater than or equal | `number:greaterorequal` | `>=` |
+| Less than | `number:less` | `<` |
+| Less than or equal | `number:lessorequal` | `<=` |
+
+### Date Operators
+| Operator | Code | Description |
+|----------|------|-------------|
+| Before | `date:before` | Earlier than |
+| After | `date:after` | Later than |
+| Between | `date:between` | Within a range |
+
+### Boolean Operators
+| Operator | Code | Description |
+|----------|------|-------------|
+| Equal to | `boolean:equal` | Boolean match |
+| Not equal to | `boolean:notequal` | Boolean mismatch |
+
+### Array Operators
+| Operator | Code | Description |
+|----------|------|-------------|
+| Contains | `array:contain` | Array includes value |
 
 ### Existence Operators
-| Operator | Code | Description |
-|----------|------|-------------|
-| Exists | `boolean:exist` | Field has a value |
-| Does not exist | `boolean:notExist` | Field is empty |
+No `type:` prefix and no `b` value.
 
-### Boolean/Other
 | Operator | Code | Description |
 |----------|------|-------------|
-| Equal to (boolean) | `boolean:equal` | Boolean match |
+| Exists | `exist` | Field has a value |
+| Does not exist | `notexist` | Field is empty |
+
+> **Casing & prefix matter — a malformed code is silently accepted but never matches.** Make does NOT use camelCase, the `numeric:` prefix, or `boolean:exist`. Broken codes seen in the wild: `notExist`, `greaterOrEqual`, `text:startsWith`, `text:contains`, `numeric:greater`, bare `equal`/`greater`. Use the lowercase codes above.
+>
+> **Regex operator:** Make's UI has a "matches pattern (regex)" text operator, but its exact `o` code isn't documented in any authoritative source. Confirm it by adding the filter once in the Make editor and exporting the blueprint to read the `o` value — don't guess.
 
 ---
 

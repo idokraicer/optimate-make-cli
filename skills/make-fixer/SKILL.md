@@ -337,16 +337,26 @@ A blueprint is a JSON object:
 - **onerror**: Error handler array. Standard break handler: `[{ "id": N, "module": "builtin:Break", "version": 1, "mapper": { "retry": true, "count": 3, "interval": 1 } }]`. The `interval` is in **minutes** (1 = 1 minute, 60 = 1 hour). When `mapper` is omitted, Make.com defaults to `count: 3, interval: 15`.
 - **routes**: Array of route objects, each containing a `flow` array (for `builtin:BasicRouter`)
 - **branches**: Array of branch objects (for `builtin:BasicIfElse` — see If-else & Merge section)
-- **filter**: Filter condition between modules. Format: `{ "name": "Filter Name", "conditions": [[{ "a": "{{1.field}}", "b": "value", "o": "equal" }]] }`. Inner array = AND conditions, outer array = OR groups. See filter operators below.
+- **filter**: Filter condition between modules. Format: `{ "name": "Filter Name", "conditions": [[{ "a": "{{1.field}}", "b": "value", "o": "text:equal" }]] }`. Inner array = AND conditions, outer array = OR groups. See filter operators below.
 
 ### Filter operators
 
-Standard operators: `equal`, `notEqual`, `greater`, `less`, `greaterOrEqual`, `lessOrEqual`, `text:equal`, `text:notEqual`, `text:startsWith`, `text:endsWith`, `text:contains`, `text:notContains`, `text:matches` (regex), `exist`, `notExist`, `array:contains`, `array:notContains`
+The `o` value is **always lowercase** and (except existence operators) carries a `type:` prefix. Make's API silently stores a malformed code, but the condition then never matches — wrong casing/prefix is the #1 cause of "filters that don't fire". Make does **not** use camelCase, the `numeric:` prefix, or `boolean:exist`.
 
-**Case-insensitive variants** — append `:ci` to any text operator:
-`text:equal:ci`, `text:notEqual:ci`, `text:contain:ci`, `text:notContain:ci`, `text:startsWith:ci`, `text:endsWith:ci`
+| Type | Operator codes |
+|------|----------------|
+| Existence (omit `b`) | `exist`, `notexist` |
+| Text (append `:ci` for case-insensitive) | `text:equal`, `text:notequal`, `text:contain`, `text:notcontain`, `text:startswith`, `text:endswith` |
+| Numeric (`number:` prefix) | `number:equal`, `number:notequal`, `number:greater`, `number:greaterorequal`, `number:less`, `number:lessorequal` |
+| Date | `date:before`, `date:after`, `date:between` |
+| Boolean | `boolean:equal`, `boolean:notequal` |
+| Array | `array:contain` |
 
-**Note:** `text:contain` (not `text:contains`) is the actual operator code for substring matching. Both forms may appear in blueprints.
+Case-insensitive text example: `text:equal:ci`, `text:notequal:ci`, `text:contain:ci`, `text:startswith:ci`, `text:endswith:ci`.
+
+**Do NOT use** (silently never match): `notExist`, `greaterOrEqual`, `text:startsWith`, `text:contains`, `numeric:greater`, `boolean:exist`, or bare `equal`/`notEqual`/`greater`/`less`.
+
+**Regex ("matches pattern"):** Make's UI exposes a regex text operator, but its exact `o` code is not in any authoritative source — confirm it by adding the filter once in the Make editor and exporting the blueprint to read the `o` value. Don't guess it.
 
 ### Scenario settings (`metadata.scenario`)
 
