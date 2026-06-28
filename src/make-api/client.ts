@@ -32,6 +32,15 @@ export class MakeApiClient {
     return `${this.baseUrl}/api/v2/scenarios/${scenarioId}`;
   }
 
+  /**
+   * Build the human-facing scenario editor URL.
+   * NOTE: the path segment is the TEAM id, NOT the org id — using an org id
+   * here produces a broken link. Always pass the scenario's own `teamId`.
+   */
+  getEditUrl(teamId: number, scenarioId: number): string {
+    return `${this.baseUrl}/${teamId}/scenarios/${scenarioId}/edit`;
+  }
+
   private headers(): Record<string, string> {
     return {
       Authorization: `Token ${this.token}`,

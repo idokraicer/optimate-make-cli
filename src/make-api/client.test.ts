@@ -23,6 +23,17 @@ describe("MakeApiClient", () => {
     );
   });
 
+  test("constructs editor URL from teamId, not orgId", () => {
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://us2.make.com",
+    });
+    // teamId 51026 in the path — NOT the org id (1943554)
+    expect(client.getEditUrl(51026, 4718889)).toBe(
+      "https://us2.make.com/51026/scenarios/4718889/edit"
+    );
+  });
+
   test("strips trailing slash from base URL", () => {
     const client = new MakeApiClient({
       token: "test-token",
