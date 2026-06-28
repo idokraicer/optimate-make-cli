@@ -6,3 +6,6 @@ blueprints/
 
 # dora code context index
 .dora/
+
+# macOS
+.DS_Store
