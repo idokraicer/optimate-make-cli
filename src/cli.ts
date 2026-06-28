@@ -13,11 +13,15 @@ import { diffBlueprints } from "./agent/blueprint-editor";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
+import { checkForUpdate, forceUpdate } from "./updater";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import pkg from "../package.json" with { type: "json" };
 
 const BLUEPRINTS_DIR = "blueprints";
-const GLOBAL_CONFIG_DIR = `${process.env.HOME}/.make-fixer`;
-const GLOBAL_ENV_PATH = `${GLOBAL_CONFIG_DIR}/.env`;
-const ZONE_CACHE_PATH = `${GLOBAL_CONFIG_DIR}/.zones.json`;
+const GLOBAL_CONFIG_DIR = join(homedir(), ".make-fixer");
+const GLOBAL_ENV_PATH = join(GLOBAL_CONFIG_DIR, ".env");
+const ZONE_CACHE_PATH = join(GLOBAL_CONFIG_DIR, ".zones.json");
 const KNOWN_ZONES = [
   "https://eu1.make.com",
   "https://eu2.make.com",
@@ -32,7 +36,7 @@ const program = new Command();
 program
   .name("make-fixer")
   .description("Analyze and auto-fix Make.com scenario blueprints")
-  .version("0.1.0")
+  .version(pkg.version)
   .addHelpText(
     "after",
     `
@@ -91,6 +95,14 @@ program
     await Bun.write(GLOBAL_ENV_PATH, content);
     console.log(`Saved API token to global config: ${GLOBAL_ENV_PATH}`);
     console.log("All make-fixer commands will use this token automatically. No local .env file is needed.");
+  });
+
+// --- update command ---
+program
+  .command("update")
+  .description("Update make-fixer to the latest version from GitHub")
+  .action(async () => {
+    await forceUpdate(pkg.version);
   });
 
 // --- fetch command ---
@@ -511,6 +523,12 @@ program
       const paused = s.isPaused ? " [paused]" : "";
       const folder = s.folderId ? ` (folder ${s.folderId})` : "";
       console.log(`  ${status} #${s.id}  ${s.name}${paused}${folder}`);
+      // Print the ready-to-open editor URL built from the scenario's OWN teamId.
+      // Hand-constructing this from a -o <orgId> lookup is the classic trap:
+      // the editor path needs the team id, not the org id.
+      if (s.teamId != null) {
+        console.log(`      ${client.getEditUrl(s.teamId, s.id)}`);
+      }
     }
     console.log("");
   })
@@ -1095,4 +1113,16 @@ function printBlueprintSummary(blueprint: Blueprint): void {
   console.log("");
 }
 
-program.parse();
+async function main() {
+  // Best-effort, throttled auto-update before running the command. Skipped for meta
+  // commands and the explicit `update` command (which checks unconditionally itself).
+  const argv = process.argv.slice(2);
+  const META = ["update", "--version", "-V", "--help", "-h"];
+  const isMeta = argv.length === 0 || argv.some((a) => META.includes(a));
+  if (!isMeta) {
+    await checkForUpdate(pkg.version);
+  }
+  await program.parseAsync();
+}
+
+main();

@@ -62,6 +62,28 @@ make-fixer notes <scenario-id>
 | `modules` | List module types for an app |
 | `notes` | List or create scenario notes |
 | `resume` | Build a 429-retry resume module |
+| `update` | Update make-fixer to the latest version |
+
+## Staying up to date
+
+make-fixer checks GitHub for a newer version on startup and, if one is found,
+updates itself before running your command. The check is:
+
+- **Throttled** — at most once every 4 hours (cached in `~/.make-fixer/.update-check.json`).
+- **Best-effort** — it never blocks your command; if the network or the update
+  fails, your command still runs on the current version.
+- **Quiet** — all notices go to stderr, so `--json` output stays clean for `jq`.
+- **Disabled on dev checkouts** — if you're running from a git clone, it won't
+  touch your setup.
+
+Update manually anytime with `make-fixer update`.
+
+Environment variables:
+
+```bash
+MAKE_FIXER_UPDATE_INTERVAL=8   # hours between checks (default: 4)
+MAKE_FIXER_NO_UPDATE=1         # disable the auto-update check entirely
+```
 
 ## Configuration
 

@@ -1,5 +1,6 @@
 {
   "name": "optimate-make-cli",
+  "version": "0.2.0",
   "description": "CLI to fetch, analyze, edit, build, and push Make.com scenario blueprints",
   "type": "module",
   "bin": {
