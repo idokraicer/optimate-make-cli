@@ -4,13 +4,34 @@ A CLI tool to fetch, analyze, edit, build, and push [Make.com](https://make.com)
 
 ## Quick Install
 
-Requires [Bun](https://bun.sh) runtime.
+Works on **Windows, macOS, and Linux**. Requires the [Bun](https://bun.sh) runtime
+and [Git](https://git-scm.com) (Bun uses Git to install from this repo).
+
+**1. Install Bun**
 
 ```bash
-# Install globally
-bun install -g git+https://github.com/idokraicer/optimate-make-cli.git
+# macOS / Linux
+curl -fsSL https://bun.sh/install | bash
+```
 
-# Authenticate with your Make.com API token
+```powershell
+# Windows (PowerShell)
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+
+**2. Install make-fixer** (same command on every OS)
+
+```bash
+bun install -g git+https://github.com/idokraicer/optimate-make-cli.git
+```
+
+This links a `make-fixer` binary into Bun's bin directory (`~/.bun/bin` on
+macOS/Linux, `%USERPROFILE%\.bun\bin` on Windows), which Bun's installer adds to
+your `PATH`. Open a new terminal if `make-fixer` isn't found immediately.
+
+**3. Authenticate with your Make.com API token**
+
+```bash
 make-fixer login --token <your-token>
 ```
 
