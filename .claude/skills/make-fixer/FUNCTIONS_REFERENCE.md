@@ -139,7 +139,7 @@ Make automatically converts types when there's a mismatch:
 
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `formatDate` | `formatDate(date; format; [timezone])` | text | Format date to text. Uses org timezone if omitted |
+| `formatDate` | `formatDate(date; [format]; [timezone])` | text | Format date to text. `format` and `timezone` are both optional — see note below |
 | `parseDate` | `parseDate(text; format; [timezone])` | date | Parse text to date |
 | `addDays` | `addDays(date; number)` | date | Add days (negative to subtract) |
 | `addHours` | `addHours(date; number)` | date | Add hours |
@@ -154,6 +154,8 @@ Make automatically converts types when there's a mismatch:
 | `setDate` | `setDate(date; number)` | date | Set day of month (1–31). Out-of-range adjusts months |
 | `setMonth` | `setMonth(date; number_or_name)` | date | Set month (1–12). Accepts English names |
 | `setYear` | `setYear(date; number)` | date | Set the year |
+
+> 📘 **`formatDate(date)` with no format token** — Calling `formatDate` with only a date (no `format`, no `timezone`) is valid and often the right choice. It returns Make's **default ISO 8601 datetime**, rendered in the **local timezone configured for that specific Make account**. That default is the format most APIs expect (Fireberry and most REST APIs), so the value round-trips and stores at the correct instant with no timezone drift — a good thing. Use bare `formatDate(yourDateVar)` when passing a date into an API/record field; only add an explicit `format` token for human-readable display text (e.g. `formatDate(date; "DD.MM.YYYY HH:mm")`).
 
 ### Date Variables
 
