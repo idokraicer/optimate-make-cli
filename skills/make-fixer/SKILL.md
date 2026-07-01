@@ -431,7 +431,7 @@ Expressions use `{{...}}` delimiters inside module mapper fields.
 - **Functions can be nested:** `{{upper(substring(1.name; 0; 1))}}` — uppercase first letter
 - **`now` and `timestamp` are variables, NOT functions** — write `{{now}}` not `{{now()}}`
 - **Comparison operators in expressions:** `=`, `!=`, `<`, `>`, `<=`, `>=`
-- **Logical operators:** `and`, `or`, `not`
+- **Logical operators in exported blueprints:** AND is `{{&}}` / `&`; OR is `{{|}}` / `|`. Do NOT generate `{{and}}` or `{{or}}` operator pills. For NOT or other internal operator tokens, verify once in the Make UI and export the blueprint instead of guessing.
 - **Arithmetic:** `+`, `-`, `*`, `/`, `%`
 
 ### Variable references

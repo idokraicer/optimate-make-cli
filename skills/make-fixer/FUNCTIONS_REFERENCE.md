@@ -14,6 +14,7 @@ Complete reference for all inline functions available in Make.com scenarios. Eac
 - Array indexing is **1-based** in `get()`, **0-based** in `slice()`
 - Module output references: `{{moduleId.fieldName}}` (e.g., `{{1.phone}}`)
 - Fallback pattern: `{{ifempty(1.phone; "")}}`
+- Logical operator pills in exported blueprints use symbols: AND is `{{&}}`, OR is `{{|}}`. Do NOT spell them as `{{and}}` or `{{or}}`. For NOT or other internal operator tokens, verify by creating the expression in Make and exporting the blueprint.
 
 ### Non-existent functions — NEVER use these
 
