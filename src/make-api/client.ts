@@ -27,6 +27,25 @@ export interface MakeApiConfig {
   coordinator?: RequestCoordinatorLike;
 }
 
+export interface TeamDetails {
+  id: number;
+  organizationId?: number;
+  organization?: { id?: number };
+  organization_id?: number;
+  name?: string;
+  [key: string]: unknown;
+}
+
+export interface OrganizationDetails {
+  id: number;
+  name?: string;
+  license?: {
+    apiLimit?: number;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export class MakeApiClient {
   private token: string;
   private baseUrl: string;
@@ -134,7 +153,7 @@ export class MakeApiClient {
     };
   }
 
-  async fetchTeam(teamId: number): Promise<any> {
+  async fetchTeam(teamId: number): Promise<TeamDetails> {
     const res = await this.request(
       `${this.baseUrl}/api/v2/teams/${teamId}`,
       {},
@@ -144,10 +163,10 @@ export class MakeApiClient {
       throw new Error(`Make API fetch team error ${res.status}: ${await res.text()}`);
     }
     const data = await res.json();
-    return data.team ?? data;
+    return (data.team ?? data) as TeamDetails;
   }
 
-  async fetchOrganization(organizationId: number): Promise<any> {
+  async fetchOrganization(organizationId: number): Promise<OrganizationDetails> {
     this.useOrganization(organizationId);
     const res = await this.request(
       `${this.baseUrl}/api/v2/organizations/${organizationId}`,
@@ -167,7 +186,7 @@ export class MakeApiClient {
         this.documentedRpm,
       );
     }
-    return organization;
+    return organization as OrganizationDetails;
   }
 
   async discoverOrganization(organizationId: number): Promise<boolean> {
@@ -335,7 +354,7 @@ export class MakeApiClient {
     limit?: number;
     offset?: number;
   }): Promise<any[]> {
-    if (opts.organizationId != null) {
+    if (opts.organizationId != null && this.organizationId !== opts.organizationId) {
       await this.discoverOrganization(opts.organizationId);
     } else if (opts.teamId != null) {
       await this.discoverOrganizationForTeam(opts.teamId);
