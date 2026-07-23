@@ -49,17 +49,17 @@ export function registerSearchCommand(program: Command, dependencies: SearchDepe
         const baseUrl = opts.baseUrl ?? parsed.baseUrl;
         const client = await dependencies.createClient(baseUrl);
         const organizationId = await resolveOrganizationId(client, opts.organization, parsed);
-        await client.fetchOrganization(organizationId);
-        const scenarios = await client.listScenarios({ organizationId });
+        const listing = await client.listAllScenarios({ organizationId });
         const clientBaseUrl = new URL(client.getScenarioUrl(1)).origin;
         const zone = zoneFromBaseUrl(clientBaseUrl);
         const indexRoot = dependencies.indexRoot ?? join(homedir(), ".make-fixer", "search-index");
-        const refreshed = await refreshSearchIndex(client, scenarios, {
+        const refreshed = await refreshSearchIndex(client, listing.scenarios, {
           indexPath: join(indexRoot, zone, String(organizationId), "index.json"),
           organizationId,
           zone,
           fresh: Boolean(opts.fresh),
           concurrency: 2,
+          pruneMissing: listing.complete,
         });
         const matches = searchEntries(
           refreshed.records.flatMap((record) => record.entries),
@@ -72,23 +72,34 @@ export function registerSearchCommand(program: Command, dependencies: SearchDepe
           cacheHits: refreshed.cacheHits,
           fetchedScenarioIds: refreshed.fetchedScenarioIds,
           failedScenarioIds: refreshed.failedScenarioIds,
-          incomplete: refreshed.incomplete,
+          incomplete: refreshed.incomplete || !listing.complete,
+          listing: {
+            complete: listing.complete,
+            pagesFetched: listing.pages.length,
+            failedOffset: listing.failedOffset,
+            failedStatus: listing.failedStatus ?? null,
+          },
         };
 
         if (opts.human) {
           emit(renderHumanSearch(data));
           return;
         }
+        const rate = client.getRateLimitSnapshot();
         emit(successEnvelope("search", data, {
           cliVersion: dependencies.cliVersion,
           source: "organization_index",
           verifiedAt: new Date().toISOString(),
-          organizationId,
-          rate: client.getRateLimitSnapshot(),
-          cache: {
-            hits: refreshed.cacheHits,
-            fetched: refreshed.fetchedScenarioIds.length,
-            fresh: Boolean(opts.fresh),
+          rateLimit: {
+            organizationId,
+            documentedRpm: rate.documentedRpm,
+            effectiveRpm: rate.effectiveRpm,
+            limitSource: rate.limitSource,
+            requestsSent: rate.requestsSent,
+            cacheHits: refreshed.cacheHits,
+            retries: rate.retries,
+            cooldownMs: rate.cooldownMs,
+            checkpointed: true,
           },
         }));
       } catch (error) {
