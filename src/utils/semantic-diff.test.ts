@@ -85,6 +85,75 @@ describe("semanticDiff", () => {
     expect(semanticDiff(inserted, removed).changes).toEqual([]);
   });
 
+  test("reports common IDs swapped within the top-level flow as semantic movements", () => {
+    const before = {
+      name: "Top-level reorder",
+      flow: [
+        { id: 1, module: "http:ActionSendData", mapper: { value: "one" } },
+        { id: 2, module: "http:ActionSendData", mapper: { value: "two" } },
+      ],
+    } as Blueprint;
+    const after = structuredClone(before);
+    [after.flow[0], after.flow[1]] = [after.flow[1], after.flow[0]];
+
+    expect(semanticDiff(before, after)).toEqual({
+      directlyModifiedModules: [1, 2],
+      ancestorModules: [],
+      changes: [
+        {
+          path: "flow[0]",
+          moduleId: 2,
+          before: "flow[1]",
+          after: "flow[0]",
+        },
+        {
+          path: "flow[1]",
+          moduleId: 1,
+          before: "flow[0]",
+          after: "flow[1]",
+        },
+      ],
+    });
+  });
+
+  test("reports common IDs swapped within an error-handler container as movements", () => {
+    const before = {
+      name: "Nested reorder",
+      flow: [{
+        id: 1,
+        module: "http:ActionSendData",
+        onerror: [
+          { id: 2, module: "builtin:Ignore", mapper: { value: "two" } },
+          { id: 3, module: "builtin:Ignore", mapper: { value: "three" } },
+        ],
+      }],
+    } as Blueprint;
+    const after = structuredClone(before);
+    [after.flow[0].onerror![0], after.flow[0].onerror![1]] = [
+      after.flow[0].onerror![1],
+      after.flow[0].onerror![0],
+    ];
+
+    expect(semanticDiff(before, after)).toEqual({
+      directlyModifiedModules: [2, 3],
+      ancestorModules: [1],
+      changes: [
+        {
+          path: "flow[0].onerror[0]",
+          moduleId: 3,
+          before: "flow[0].onerror[1]",
+          after: "flow[0].onerror[0]",
+        },
+        {
+          path: "flow[0].onerror[1]",
+          moduleId: 2,
+          before: "flow[0].onerror[0]",
+          after: "flow[0].onerror[1]",
+        },
+      ],
+    });
+  });
+
   test("reports route metadata leaves on the owning module", () => {
     const before = {
       name: "Route metadata",

@@ -147,11 +147,55 @@ function moduleContainerPath(path: string): string {
   return path.replace(/\[\d+\]$/, "");
 }
 
+function reorderedModuleIds(
+  beforeModules: IdentifiedModule[],
+  afterModules: IdentifiedModule[],
+): Set<number> {
+  const beforeById = new Map(beforeModules.map((entry) => [entry.id, entry]));
+  const afterById = new Map(afterModules.map((entry) => [entry.id, entry]));
+  const containers = new Set<string>();
+
+  for (const afterModule of afterModules) {
+    const beforeModule = beforeById.get(afterModule.id);
+    if (beforeModule && moduleContainerPath(beforeModule.path) === moduleContainerPath(afterModule.path)) {
+      containers.add(moduleContainerPath(afterModule.path));
+    }
+  }
+
+  const reordered = new Set<number>();
+  for (const container of containers) {
+    const beforeOrder = beforeModules
+      .filter((entry) => {
+        const afterModule = afterById.get(entry.id);
+        return afterModule != null
+          && moduleContainerPath(entry.path) === container
+          && moduleContainerPath(afterModule.path) === container;
+      })
+      .map((entry) => entry.id);
+    const afterOrder = afterModules
+      .filter((entry) => {
+        const beforeModule = beforeById.get(entry.id);
+        return beforeModule != null
+          && moduleContainerPath(entry.path) === container
+          && moduleContainerPath(beforeModule.path) === container;
+      })
+      .map((entry) => entry.id);
+    for (let index = 0; index < beforeOrder.length; index++) {
+      if (beforeOrder[index] !== afterOrder[index]) {
+        reordered.add(beforeOrder[index]);
+        reordered.add(afterOrder[index]);
+      }
+    }
+  }
+  return reordered;
+}
+
 export function semanticDiff(before: Blueprint, after: Blueprint): SemanticDiff {
   const direct = new Set<number>();
   const ancestors = new Set<number>();
   const beforeModules = new Map(identifiedModules(before).map((entry) => [entry.id, entry]));
   const afterModules = identifiedModules(after);
+  const beforeModuleList = [...beforeModules.values()];
   const beforeNullModules = new Map(nullIdModules(before).map((entry) => [entry.path, entry]));
   const afterNullModules = nullIdModules(after);
   const beforeTopLevel = { ...before } as Record<string, unknown>;
@@ -164,20 +208,24 @@ export function semanticDiff(before: Blueprint, after: Blueprint): SemanticDiff 
     moduleId: null,
   }));
 
+  const recordMovement = (beforeModule: IdentifiedModule, afterModule: IdentifiedModule) => {
+    direct.add(afterModule.id);
+    for (const ancestorId of ancestorIds(afterModule.path, afterModules)) {
+      ancestors.add(ancestorId);
+    }
+    changes.push({
+      path: afterModule.path,
+      moduleId: afterModule.id,
+      before: beforeModule.path,
+      after: afterModule.path,
+    });
+  };
+
   for (const afterModule of afterModules) {
     const beforeModule = beforeModules.get(afterModule.id);
     if (!beforeModule) continue;
     if (moduleContainerPath(beforeModule.path) !== moduleContainerPath(afterModule.path)) {
-      direct.add(afterModule.id);
-      for (const ancestorId of ancestorIds(afterModule.path, afterModules)) {
-        ancestors.add(ancestorId);
-      }
-      changes.push({
-        path: afterModule.path,
-        moduleId: afterModule.id,
-        before: beforeModule.path,
-        after: afterModule.path,
-      });
+      recordMovement(beforeModule, afterModule);
     }
     const moduleChanges = diffLeaves(
       ownModuleContent(beforeModule.module),
@@ -190,6 +238,12 @@ export function semanticDiff(before: Blueprint, after: Blueprint): SemanticDiff 
       ancestors.add(ancestorId);
     }
     changes.push(...moduleChanges.map((change) => ({ ...change, moduleId: afterModule.id })));
+  }
+
+  for (const moduleId of reorderedModuleIds(beforeModuleList, afterModules)) {
+    const beforeModule = beforeModules.get(moduleId);
+    const afterModule = afterModules.find((entry) => entry.id === moduleId);
+    if (beforeModule && afterModule) recordMovement(beforeModule, afterModule);
   }
 
   for (const afterModule of afterNullModules) {
