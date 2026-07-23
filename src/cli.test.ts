@@ -83,6 +83,69 @@ function expectInspectFailure(result: { stdout: string; stderr: string; code: nu
 }
 
 describe("CLI commands", () => {
+  test("CLI exposes read-only capability diagnostics", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "doctor", "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, MAKE_FIXER_NO_UPDATE: "1" },
+    });
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).toContain("safe, read-only capability probes");
+    expect(stdout).toContain("--from-url");
+    expect(stdout).toContain("--scenario");
+    expect(stdout).toContain("--json");
+    expect(stdout).toContain("--human");
+  });
+
+  test("doctor performs GET-only probes and reports discovered rate evidence", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-doctor-"));
+    const preload = join(directory, "mock-fetch.ts");
+    await Bun.write(preload, `
+      globalThis.fetch = async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const url = new URL(request.url);
+        console.error("MOCK_FETCH " + request.method + " " + url.pathname);
+        if (request.method !== "GET") {
+          return Response.json({ code: "UNSAFE_METHOD" }, { status: 500 });
+        }
+        if (url.pathname === "/api/v2/organizations") {
+          return Response.json({ organizations: [{ id: 12 }] });
+        }
+        if (url.pathname === "/api/v2/organizations/12") {
+          return Response.json({ organization: { id: 12, license: { apiLimit: 120 } } });
+        }
+        return Response.json({ code: "NOT_FOUND" }, { status: 404 });
+      };
+    `);
+
+    const result = await runCli("doctor", [
+      "--from-url",
+      "https://eu2.make.com/organization/12/dashboard",
+    ], { cwd: directory, preload });
+    rmSync(directory, { recursive: true, force: true });
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("MOCK_FETCH GET /api/v2/organizations");
+    expect(result.stderr).toContain("MOCK_FETCH GET /api/v2/organizations/12");
+    expect(result.stderr).not.toContain("MOCK_FETCH POST");
+    expect(result.stderr).not.toContain("MOCK_FETCH PATCH");
+    expect(result.stderr).not.toContain("MOCK_FETCH DELETE");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      command: "doctor",
+      data: {
+        configuredZone: expect.any(String),
+        resolvedZone: "eu2",
+        organizationId: 12,
+        rateLimit: {
+          documentedRpm: 120,
+          effectiveRpm: 114,
+          limitSource: "organization_api",
+        },
+      },
+    });
+  });
+
   test("CLI exposes safe scenario run controls", async () => {
     const proc = Bun.spawn(["bun", "src/cli.ts", "run", "--help"], {
       stdout: "pipe",
