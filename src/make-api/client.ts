@@ -115,6 +115,11 @@ export class MakeApiClient {
     };
   }
 
+  private useOrganization(organizationId: number): void {
+    if (this.organizationId !== organizationId) this.documentedRpm = null;
+    this.organizationId = organizationId;
+  }
+
   getRateLimitSnapshot(): RateLimitSnapshot {
     this.coordinator ??= getDefaultRequestCoordinator();
     return this.coordinator.getRateLimitSnapshot?.(this.rateBucket()) ?? {
@@ -143,6 +148,7 @@ export class MakeApiClient {
   }
 
   async fetchOrganization(organizationId: number): Promise<any> {
+    this.useOrganization(organizationId);
     const res = await this.request(
       `${this.baseUrl}/api/v2/organizations/${organizationId}`,
       {},
@@ -153,7 +159,6 @@ export class MakeApiClient {
     }
     const data = await res.json();
     const organization = data.organization ?? data;
-    this.organizationId = organizationId;
     const apiLimit = Number(organization?.license?.apiLimit);
     if (Number.isFinite(apiLimit) && apiLimit > 0) {
       this.documentedRpm = Math.floor(apiLimit);
@@ -166,6 +171,7 @@ export class MakeApiClient {
   }
 
   async discoverOrganization(organizationId: number): Promise<boolean> {
+    this.useOrganization(organizationId);
     try {
       await this.fetchOrganization(organizationId);
       return true;
@@ -181,6 +187,7 @@ export class MakeApiClient {
         team.organizationId ?? team.organization?.id ?? team.organization_id,
       );
       if (!Number.isInteger(organizationId) || organizationId <= 0) return false;
+      this.useOrganization(organizationId);
       return await this.discoverOrganization(organizationId);
     } catch {
       return false;
@@ -196,6 +203,7 @@ export class MakeApiClient {
         ?? scenario.organization_id,
       );
       if (Number.isInteger(organizationId) && organizationId > 0) {
+        this.useOrganization(organizationId);
         return await this.discoverOrganization(organizationId);
       }
       const teamId = Number(scenario.teamId ?? scenario.team?.id ?? scenario.team_id);

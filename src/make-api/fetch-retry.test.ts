@@ -34,6 +34,7 @@ describe("fetchWithRetry", () => {
     const attempts: Request[] = [];
     const limiter: RateLimiterStore = {
       reserve: async () => undefined,
+      waitForCooldown: async () => undefined,
       setCooldown: () => undefined,
       getSnapshot: () => ({
         documentedRpm: null,
@@ -104,5 +105,80 @@ describe("fetchWithRetry", () => {
     expect(captured.mode).toBe("cors");
     expect(await captured.text()).toBe("{}");
     expect(await attempts[1]!.text()).toBe("{}");
+  });
+
+  test("uses native Request header replacement semantics for Request plus init", async () => {
+    let captured!: Request;
+    const coordinator = {
+      request: async (input: string | URL | Request, init: RequestInit) => {
+        captured = new Request(input, init);
+        return new Response("ok");
+      },
+    };
+    const source = new Request("https://eu1.make.com/api/v2/scenarios", {
+      headers: {
+        Authorization: "Token source-secret",
+        Cookie: "session=source-secret",
+        "X-Source": "source",
+      },
+    });
+
+    await fetchWithRetry(source, {
+      headers: {
+        "X-Replacement": "replacement",
+      },
+    }, { coordinator });
+
+    expect(captured.headers.get("authorization")).toBeNull();
+    expect(captured.headers.get("cookie")).toBeNull();
+    expect(captured.headers.get("x-source")).toBeNull();
+    expect(captured.headers.get("x-replacement")).toBe("replacement");
+  });
+
+  test("replays a URL RequestInit ReadableStream body after a forced retry", async () => {
+    const bodies: string[] = [];
+    const limiter: RateLimiterStore = {
+      reserve: async () => undefined,
+      waitForCooldown: async () => undefined,
+      setCooldown: () => undefined,
+      getSnapshot: () => ({
+        documentedRpm: null,
+        effectiveRpm: 30,
+        limitSource: "fallback",
+        requestsSent: 0,
+        retries: 0,
+        cooldownMs: 0,
+      }),
+      noteRetry: () => undefined,
+      recordExemptRequest: () => undefined,
+      setOrganizationLimit: () => undefined,
+      acquireExecutionLease: async () => () => undefined,
+    };
+    const coordinator = new RequestCoordinator({
+      limiter,
+      random: () => 0,
+      sleep: async () => undefined,
+      request: async (input, init) => {
+        const request = new Request(input, init);
+        bodies.push(await request.text());
+        return bodies.length === 1
+          ? new Response("", { status: 503 })
+          : new Response("ok");
+      },
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("stream-body"));
+        controller.close();
+      },
+    });
+
+    await fetchWithRetry("https://eu1.make.com/api/v2/scenarios/1", {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    }, { coordinator });
+
+    expect(bodies).toEqual(["stream-body", "stream-body"]);
   });
 });

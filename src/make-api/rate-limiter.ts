@@ -33,6 +33,11 @@ export interface SharedRateLimiterOptions {
   pid?: number;
 }
 
+export type ExecutionLease = (() => void) & {
+  renew?: () => void;
+  release?: () => void;
+};
+
 interface ReservationDecision {
   reserved: boolean;
   waitMs: number;
@@ -172,6 +177,21 @@ export class SharedRateLimiter {
     `).run(bucketKey, Math.floor(untilMs));
   }
 
+  async waitForCooldown(bucket: RateBucket, signal?: AbortSignal): Promise<void> {
+    const bucketKey = keyForBucket(bucket);
+    while (true) {
+      if (signal?.aborted) throw abortError(signal);
+      const now = this.now();
+      const cooldown = this.db.query<TimeRow, [string]>(`
+        SELECT until_ms AS value
+        FROM rate_cooldowns
+        WHERE bucket = ?
+      `).get(bucketKey);
+      if (!cooldown || cooldown.value <= now) return;
+      await sleepWithAbort(this.sleep, cooldown.value - now, signal);
+    }
+  }
+
   setOrganizationLimit(bucket: RateBucket, apiLimit: number, fetchedAtMs = this.now()): void {
     const bucketKey = keyForBucket(bucket);
     const normalizedLimit = Math.max(1, Math.floor(apiLimit));
@@ -198,7 +218,7 @@ export class SharedRateLimiter {
   async acquireExecutionLease(
     bucket: RateBucket,
     signal?: AbortSignal,
-  ): Promise<() => void> {
+  ): Promise<ExecutionLease> {
     const bucketKey = keyForBucket(bucket);
     const leaseId = `${this.pid}:${crypto.randomUUID()}`;
 
@@ -206,11 +226,21 @@ export class SharedRateLimiter {
       if (signal?.aborted) throw abortError(signal);
       if (this.tryAcquireExecutionLease(bucketKey, leaseId, this.now())) {
         let released = false;
-        return () => {
+        const release = (() => {
           if (released) return;
           released = true;
           this.db.query("DELETE FROM inflight_leases WHERE lease_id = ?").run(leaseId);
+        }) as ExecutionLease;
+        release.release = release;
+        release.renew = () => {
+          if (released) return;
+          this.db.query(`
+            UPDATE inflight_leases
+            SET expires_at_ms = ?
+            WHERE lease_id = ?
+          `).run(this.now() + INFLIGHT_LEASE_TTL_MS, leaseId);
         };
+        return release;
       }
       const jitterMs = Math.floor(this.random() * CONTENTION_JITTER_MS);
       await sleepWithAbort(this.sleep, INFLIGHT_POLL_MS + jitterMs, signal);
