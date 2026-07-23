@@ -15,6 +15,7 @@ import { semanticDiff, type SemanticDiff } from "./utils/semantic-diff";
 import { InspectInputError, registerInspectCommand } from "./commands/inspect";
 import { registerSearchCommand } from "./commands/search";
 import { registerRunCommand } from "./commands/run";
+import { registerDoctorCommand } from "./commands/doctor";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
@@ -156,6 +157,15 @@ registerSearchCommand(program, {
 registerRunCommand(program, {
   resolveClient: resolveClientOrThrow,
   parseScenarioInput: parseInspectScenarioInput,
+  cliVersion: pkg.version,
+});
+
+registerDoctorCommand(program, {
+  createClient: createClientOrThrow,
+  resolveScenarioClient: resolveClientOrThrow,
+  parseMakeUrl,
+  parseScenarioInput: parseInspectScenarioInput,
+  configuredBaseUrl: async () => (await resolveCredentialsOrThrow()).preferred,
   cliVersion: pkg.version,
 });
 
