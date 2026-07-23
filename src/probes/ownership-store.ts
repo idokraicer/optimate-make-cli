@@ -22,6 +22,7 @@ export interface OwnedScenarioRecord {
   createdAt: string;
   updatedAt: string;
   lastVerifiedFingerprint: string;
+  remoteVerifiedAt: string | null;
   lifecycleState: ProbeLifecycleState;
   executionId: string | null;
 }
@@ -57,11 +58,19 @@ export class SqliteOwnershipStore implements OwnershipStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         last_verified_fingerprint TEXT NOT NULL,
+        remote_verified_at TEXT,
         lifecycle_state TEXT NOT NULL,
         execution_id TEXT,
         PRIMARY KEY (base_url, scenario_id)
       )
     `);
+    const columns = this.db.query("PRAGMA table_info(owned_scenarios)").all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((column) => column.name === "remote_verified_at")) {
+      // Existing rows are deliberately NULL: legacy provenance cannot authorize deletion.
+      this.db.exec("ALTER TABLE owned_scenarios ADD COLUMN remote_verified_at TEXT");
+    }
   }
 
   put(record: OwnedScenarioRecord): void {
@@ -70,12 +79,14 @@ export class SqliteOwnershipStore implements OwnershipStore {
       this.db.query(`
         INSERT INTO owned_scenarios (
           base_url, scenario_id, operation_id, team_id, organization_id,
-          created_at, updated_at, last_verified_fingerprint, lifecycle_state, execution_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          created_at, updated_at, last_verified_fingerprint, remote_verified_at,
+          lifecycle_state, execution_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         normalized.baseUrl, normalized.scenarioId, normalized.operationId,
         normalized.teamId, normalized.organizationId, normalized.createdAt,
         normalized.updatedAt, normalized.lastVerifiedFingerprint,
+        normalized.remoteVerifiedAt,
         normalized.lifecycleState, normalized.executionId,
       );
     })();
@@ -102,11 +113,12 @@ export class SqliteOwnershipStore implements OwnershipStore {
       this.db.query(`
         UPDATE owned_scenarios SET operation_id = ?, team_id = ?, organization_id = ?,
           created_at = ?, updated_at = ?, last_verified_fingerprint = ?,
-          lifecycle_state = ?, execution_id = ?
+          remote_verified_at = ?, lifecycle_state = ?, execution_id = ?
         WHERE base_url = ? AND scenario_id = ?
       `).run(
         next.operationId, next.teamId, next.organizationId, next.createdAt, next.updatedAt,
-        next.lastVerifiedFingerprint, next.lifecycleState, next.executionId,
+        next.lastVerifiedFingerprint, next.remoteVerifiedAt,
+        next.lifecycleState, next.executionId,
         next.baseUrl, next.scenarioId,
       );
     })();
@@ -151,6 +163,9 @@ function fromRow(row: Record<string, unknown>): OwnedScenarioRecord {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     lastVerifiedFingerprint: String(row.last_verified_fingerprint),
+    remoteVerifiedAt: row.remote_verified_at === null || row.remote_verified_at === undefined
+      ? null
+      : String(row.remote_verified_at),
     lifecycleState: String(row.lifecycle_state) as ProbeLifecycleState,
     executionId: row.execution_id === null ? null : String(row.execution_id),
   };

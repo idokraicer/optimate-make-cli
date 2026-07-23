@@ -15,6 +15,7 @@ function record(overrides: Partial<OwnedScenarioRecord> = {}): OwnedScenarioReco
     createdAt: "2026-07-23T10:00:00.000Z",
     updatedAt: "2026-07-23T10:00:00.000Z",
     lastVerifiedFingerprint: "fingerprint-7",
+    remoteVerifiedAt: "2026-07-23T10:00:00.000Z",
     lifecycleState: "created",
     executionId: null,
     ...overrides,
@@ -51,5 +52,28 @@ describe("SqliteOwnershipStore", () => {
     store.markDeleted("https://eu1.make.com", 7);
     expect(store.get("https://eu1.make.com", 7)?.lifecycleState).toBe("deleted");
     expect(store.listPending().map((item) => item.scenarioId)).toEqual([8]);
+  });
+
+  test("migrates legacy ownership records as remotely unverified", () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), "ownership-legacy-")), "state.sqlite");
+    const db = new Database(dbPath, { create: true });
+    db.exec(`
+      CREATE TABLE owned_scenarios (
+        base_url TEXT NOT NULL, scenario_id INTEGER NOT NULL, operation_id TEXT NOT NULL,
+        team_id INTEGER NOT NULL, organization_id INTEGER NOT NULL, created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL, last_verified_fingerprint TEXT NOT NULL,
+        lifecycle_state TEXT NOT NULL, execution_id TEXT,
+        PRIMARY KEY (base_url, scenario_id)
+      );
+      INSERT INTO owned_scenarios VALUES (
+        'https://eu1.make.com', 7, 'legacy', 21, 9,
+        '2026-07-23T10:00:00.000Z', '2026-07-23T10:00:00.000Z',
+        'local-only', 'verified', NULL
+      );
+    `);
+    db.close();
+
+    const store = new SqliteOwnershipStore({ dbPath });
+    expect(store.get("https://eu1.make.com", 7)?.remoteVerifiedAt).toBeNull();
   });
 });

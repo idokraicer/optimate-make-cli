@@ -34,7 +34,7 @@ describe("MakeApiClient", () => {
       coordinator: {
         request: async (url, init, context) => {
           requests.push({ url: String(url), init, context });
-          if (init.method === "DELETE") return new Response(null, { status: 204 });
+          if (init.method === "DELETE") return Response.json({ scenario: 44 });
           return Response.json({
             scenario: {
               id: 44, name: "probe", teamId: 21, isActive: false,
@@ -52,13 +52,15 @@ describe("MakeApiClient", () => {
     await client.fetchScenarioDetails(44);
     await client.startScenario(44);
     await client.stopScenario(44);
-    expect(await client.deleteScenario(44)).toBe(204);
+    expect(await client.deleteScenario(44)).toBe(44);
 
     expect(requests.map(({ url }) => url)).toEqual([
-      "https://eu1.make.com/api/v2/scenarios",
+      "https://eu1.make.com/api/v2/scenarios?confirmed=true",
       "https://eu1.make.com/api/v2/scenarios/44",
       "https://eu1.make.com/api/v2/scenarios/44/start",
+      "https://eu1.make.com/api/v2/scenarios/44",
       "https://eu1.make.com/api/v2/scenarios/44/stop",
+      "https://eu1.make.com/api/v2/scenarios/44",
       "https://eu1.make.com/api/v2/scenarios/44",
     ]);
     expect(JSON.parse(String(requests[0].init.body))).toEqual({
@@ -172,8 +174,41 @@ describe("MakeApiClient", () => {
     const client = new MakeApiClient({
       token: "test-token", baseUrl: "https://eu1.make.com", coordinator,
     });
-    expect(await client.deleteScenario(44)).toBe(204);
+    expect(await client.deleteScenario(44)).toBe(44);
     expect({ deletes, gets }).toEqual({ deletes: 1, gets: 1 });
+  });
+
+  test("start and stop accept documented partial mutation bodies then fetch full details", async () => {
+    const responses = [
+      Response.json({ scenario: { id: 44, isActive: true, islinked: true } }),
+      Response.json({ scenario: {
+        id: 44, name: "probe", teamId: 21, isActive: true,
+        scheduling: { type: "on-demand" },
+      } }),
+      Response.json({ scenario: { id: 44, isActive: false, islinked: true } }),
+      Response.json({ scenario: {
+        id: 44, name: "probe", teamId: 21, isActive: false,
+        scheduling: { type: "on-demand" },
+      } }),
+    ];
+    const client = new MakeApiClient({
+      token: "token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: { request: async () => responses.shift()! },
+    });
+    expect(await client.startScenario(44)).toMatchObject({ id: 44, teamId: 21, isActive: true });
+    expect(await client.stopScenario(44)).toMatchObject({ id: 44, teamId: 21, isActive: false });
+  });
+
+  test("delete returns the documented deleted scenario ID from its response body", async () => {
+    const client = new MakeApiClient({
+      token: "token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async () => Response.json({ scenario: 77 }),
+      },
+    });
+    expect(await client.deleteScenario(77)).toBe(77);
   });
 
   test("diagnostic GET preserves response metadata and updates the observed organization limit", async () => {

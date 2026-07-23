@@ -89,6 +89,7 @@ export function registerCreateCommand(program: Command, dependencies: CreateDepe
           createdAt: now,
           updatedAt: now,
           lastVerifiedFingerprint: await fingerprintBlueprint(blueprint),
+          remoteVerifiedAt: null,
           lifecycleState: "created",
           executionId: null,
         });
@@ -100,6 +101,7 @@ export function registerCreateCommand(program: Command, dependencies: CreateDepe
         const fingerprint = await fingerprintBlueprint(remote);
         dependencies.ownership.update(resolved.baseUrl, created.id, {
           lastVerifiedFingerprint: fingerprint,
+          remoteVerifiedAt: (dependencies.now ?? (() => new Date().toISOString()))(),
           lifecycleState: "verified",
         });
         const data = { ...preview, preview: false, scenarioId: created.id, verified: true };
