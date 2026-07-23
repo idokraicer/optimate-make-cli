@@ -49,6 +49,14 @@ const KNOWN_ZONES = [
   "https://us2.make.com",
 ];
 const ownershipStore: OwnershipStore = {
+  beginProbe: (intent) => getDefaultOwnershipStore().beginProbe(intent),
+  assignProbeScenario: (baseUrl, operationId, scenarioId) =>
+    getDefaultOwnershipStore().assignProbeScenario(baseUrl, operationId, scenarioId),
+  discardProbeIntent: (baseUrl, operationId) =>
+    getDefaultOwnershipStore().discardProbeIntent(baseUrl, operationId),
+  getProbeIntent: (baseUrl, operationId) =>
+    getDefaultOwnershipStore().getProbeIntent(baseUrl, operationId),
+  listProbeIntents: () => getDefaultOwnershipStore().listProbeIntents(),
   put: (record) => getDefaultOwnershipStore().put(record),
   get: (baseUrl, scenarioId) => getDefaultOwnershipStore().get(baseUrl, scenarioId),
   update: (baseUrl, scenarioId, patch) =>

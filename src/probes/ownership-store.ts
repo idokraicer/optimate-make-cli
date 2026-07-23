@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { defaultRateDatabasePath } from "../make-api/rate-limiter";
 
 export type ProbeLifecycleState =
+  | "creating"
   | "created"
   | "verified"
   | "active"
@@ -27,7 +28,25 @@ export interface OwnedScenarioRecord {
   executionId: string | null;
 }
 
+export interface ProbeOwnershipIntent {
+  operationId: string;
+  teamId: number;
+  organizationId: number;
+  baseUrl: string;
+  createdAt: string;
+  updatedAt: string;
+  lastVerifiedFingerprint: string;
+  remoteVerifiedAt: null;
+  lifecycleState: "creating";
+  executionId: null;
+}
+
 export interface OwnershipStore {
+  beginProbe(intent: ProbeOwnershipIntent): void;
+  assignProbeScenario(baseUrl: string, operationId: string, scenarioId: number): void;
+  discardProbeIntent(baseUrl: string, operationId: string): void;
+  getProbeIntent(baseUrl: string, operationId: string): ProbeOwnershipIntent | null;
+  listProbeIntents(): ProbeOwnershipIntent[];
   put(record: OwnedScenarioRecord): void;
   get(baseUrl: string, scenarioId: number): OwnedScenarioRecord | null;
   update(baseUrl: string, scenarioId: number, patch: Partial<OwnedScenarioRecord>): void;
@@ -71,6 +90,82 @@ export class SqliteOwnershipStore implements OwnershipStore {
       // Existing rows are deliberately NULL: legacy provenance cannot authorize deletion.
       this.db.exec("ALTER TABLE owned_scenarios ADD COLUMN remote_verified_at TEXT");
     }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS probe_operation_intents (
+        base_url TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        scenario_id INTEGER,
+        team_id INTEGER NOT NULL,
+        organization_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_verified_fingerprint TEXT NOT NULL,
+        remote_verified_at TEXT,
+        lifecycle_state TEXT NOT NULL,
+        execution_id TEXT,
+        PRIMARY KEY (base_url, operation_id),
+        UNIQUE (base_url, scenario_id)
+      )
+    `);
+  }
+
+  beginProbe(intent: ProbeOwnershipIntent): void {
+    const baseUrl = normalizeBaseUrl(intent.baseUrl);
+    this.db.transaction(() => {
+      this.db.query(`
+        INSERT INTO probe_operation_intents (
+          base_url, operation_id, scenario_id, team_id, organization_id,
+          created_at, updated_at, last_verified_fingerprint, remote_verified_at,
+          lifecycle_state, execution_id
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL, 'creating', NULL)
+      `).run(
+        baseUrl,
+        intent.operationId,
+        intent.teamId,
+        intent.organizationId,
+        intent.createdAt,
+        intent.updatedAt,
+        intent.lastVerifiedFingerprint,
+      );
+    })();
+  }
+
+  assignProbeScenario(baseUrl: string, operationId: string, scenarioId: number): void {
+    if (!Number.isInteger(scenarioId) || scenarioId <= 0) {
+      throw new Error("Probe scenario assignment requires a positive scenario ID.");
+    }
+    const result = this.db.query(`
+      UPDATE probe_operation_intents
+      SET scenario_id = ?, lifecycle_state = 'created', updated_at = ?
+      WHERE base_url = ? AND operation_id = ? AND scenario_id IS NULL
+    `).run(scenarioId, this.now(), normalizeBaseUrl(baseUrl), operationId);
+    if (result.changes !== 1) {
+      throw new Error("Probe ownership intent was missing or already assigned.");
+    }
+  }
+
+  discardProbeIntent(baseUrl: string, operationId: string): void {
+    this.db.query(`
+      DELETE FROM probe_operation_intents
+      WHERE base_url = ? AND operation_id = ? AND scenario_id IS NULL
+    `).run(normalizeBaseUrl(baseUrl), operationId);
+  }
+
+  getProbeIntent(baseUrl: string, operationId: string): ProbeOwnershipIntent | null {
+    const row = this.db.query(`
+      SELECT * FROM probe_operation_intents
+      WHERE base_url = ? AND operation_id = ? AND scenario_id IS NULL
+    `).get(normalizeBaseUrl(baseUrl), operationId) as Record<string, unknown> | null;
+    return row ? intentFromRow(row) : null;
+  }
+
+  listProbeIntents(): ProbeOwnershipIntent[] {
+    const rows = this.db.query(`
+      SELECT * FROM probe_operation_intents
+      WHERE scenario_id IS NULL
+      ORDER BY created_at ASC, operation_id ASC
+    `).all() as Record<string, unknown>[];
+    return rows.map(intentFromRow);
   }
 
   put(record: OwnedScenarioRecord): void {
@@ -93,10 +188,16 @@ export class SqliteOwnershipStore implements OwnershipStore {
   }
 
   get(baseUrl: string, scenarioId: number): OwnedScenarioRecord | null {
+    const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
     const row = this.db.query(`
       SELECT * FROM owned_scenarios WHERE base_url = ? AND scenario_id = ?
-    `).get(normalizeBaseUrl(baseUrl), scenarioId) as Record<string, unknown> | null;
-    return row ? fromRow(row) : null;
+    `).get(normalizedBaseUrl, scenarioId) as Record<string, unknown> | null;
+    if (row) return fromRow(row);
+    const intent = this.db.query(`
+      SELECT * FROM probe_operation_intents
+      WHERE base_url = ? AND scenario_id = ?
+    `).get(normalizedBaseUrl, scenarioId) as Record<string, unknown> | null;
+    return intent ? fromRow(intent) : null;
   }
 
   update(baseUrl: string, scenarioId: number, patch: Partial<OwnedScenarioRecord>): void {
@@ -109,9 +210,17 @@ export class SqliteOwnershipStore implements OwnershipStore {
       scenarioId: current.scenarioId,
       updatedAt: this.now(),
     });
+    const owned = this.db.query(`
+      SELECT 1 FROM owned_scenarios WHERE base_url = ? AND scenario_id = ?
+    `).get(next.baseUrl, next.scenarioId);
     this.db.transaction(() => {
-      this.db.query(`
+      this.db.query(owned ? `
         UPDATE owned_scenarios SET operation_id = ?, team_id = ?, organization_id = ?,
+          created_at = ?, updated_at = ?, last_verified_fingerprint = ?,
+          remote_verified_at = ?, lifecycle_state = ?, execution_id = ?
+        WHERE base_url = ? AND scenario_id = ?
+      ` : `
+        UPDATE probe_operation_intents SET operation_id = ?, team_id = ?, organization_id = ?,
           created_at = ?, updated_at = ?, last_verified_fingerprint = ?,
           remote_verified_at = ?, lifecycle_state = ?, execution_id = ?
         WHERE base_url = ? AND scenario_id = ?
@@ -126,8 +235,17 @@ export class SqliteOwnershipStore implements OwnershipStore {
 
   listPending(): OwnedScenarioRecord[] {
     const rows = this.db.query(`
-      SELECT * FROM owned_scenarios
+      SELECT base_url, scenario_id, operation_id, team_id, organization_id,
+        created_at, updated_at, last_verified_fingerprint, remote_verified_at,
+        lifecycle_state, execution_id
+      FROM owned_scenarios
       WHERE lifecycle_state != 'deleted'
+      UNION ALL
+      SELECT base_url, scenario_id, operation_id, team_id, organization_id,
+        created_at, updated_at, last_verified_fingerprint, remote_verified_at,
+        lifecycle_state, execution_id
+      FROM probe_operation_intents
+      WHERE scenario_id IS NOT NULL AND lifecycle_state != 'deleted'
       ORDER BY created_at ASC, scenario_id ASC
     `).all() as Record<string, unknown>[];
     return rows.map(fromRow);
@@ -168,5 +286,20 @@ function fromRow(row: Record<string, unknown>): OwnedScenarioRecord {
       : String(row.remote_verified_at),
     lifecycleState: String(row.lifecycle_state) as ProbeLifecycleState,
     executionId: row.execution_id === null ? null : String(row.execution_id),
+  };
+}
+
+function intentFromRow(row: Record<string, unknown>): ProbeOwnershipIntent {
+  return {
+    operationId: String(row.operation_id),
+    teamId: Number(row.team_id),
+    organizationId: Number(row.organization_id),
+    baseUrl: String(row.base_url),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    lastVerifiedFingerprint: String(row.last_verified_fingerprint),
+    remoteVerifiedAt: null,
+    lifecycleState: "creating",
+    executionId: null,
   };
 }

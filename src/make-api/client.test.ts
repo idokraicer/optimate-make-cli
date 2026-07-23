@@ -419,6 +419,53 @@ describe("MakeApiClient", () => {
     expect(postCalls).toBe(1);
   });
 
+  test("create reconciliation is not cancelled after the POST may have been sent", async () => {
+    const controller = new AbortController();
+    let postCalls = 0;
+    const coordinator = new RequestCoordinator({
+      limiter: immediateLimiter(),
+      request: async (request) => {
+        const url = new URL(request.url);
+        if (request.method === "POST") {
+          postCalls++;
+          controller.abort(new DOMException("cancelled after send", "AbortError"));
+          throw new TypeError("socket closed after send");
+        }
+        if (url.pathname.endsWith("/teams/21")) {
+          return Response.json({ team: { id: 21, organizationId: 9 } });
+        }
+        if (url.pathname.endsWith("/organizations/9")) {
+          return Response.json({ organization: { id: 9, license: { apiLimit: 60 } } });
+        }
+        return Response.json({
+          scenarios: [{
+            id: 44,
+            teamId: 21,
+            name: "probe [123e4567-e89b-12d3-a456-426614174000]",
+            isActive: false,
+            scheduling: { type: "on-demand" },
+          }],
+        });
+      },
+    });
+    const client = new MakeApiClient({
+      token: "test-token", baseUrl: "https://eu1.make.com", coordinator,
+    });
+    const result = await client.createScenario({
+      teamId: 21,
+      blueprint: {
+        name: "probe [123e4567-e89b-12d3-a456-426614174000]",
+        flow: [],
+      } as any,
+      scheduling: { type: "on-demand" },
+      confirmed: true,
+      signal: controller.signal,
+    });
+    expect(result.id).toBe(44);
+    expect(postCalls).toBe(1);
+    expect(controller.signal.aborted).toBeTrue();
+  });
+
   test("run cancellation interrupts the real coordinator's indefinite 429 wait", async () => {
     let notifySent!: () => void;
     const sent = new Promise<void>((resolve) => { notifySent = resolve; });

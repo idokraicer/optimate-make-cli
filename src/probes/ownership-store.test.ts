@@ -23,6 +23,66 @@ function record(overrides: Partial<OwnedScenarioRecord> = {}): OwnedScenarioReco
 }
 
 describe("SqliteOwnershipStore", () => {
+  test("reserves an operation before creation and atomically assigns its scenario ID", () => {
+    const store = new SqliteOwnershipStore({ dbPath: ":memory:" });
+    store.beginProbe({
+      operationId: "probe-operation",
+      teamId: 21,
+      organizationId: 9,
+      baseUrl: "https://eu1.make.com",
+      createdAt: "2026-07-23T10:00:00.000Z",
+      updatedAt: "2026-07-23T10:00:00.000Z",
+      lastVerifiedFingerprint: "requested",
+      remoteVerifiedAt: null,
+      lifecycleState: "creating",
+      executionId: null,
+    });
+    expect(store.listPending()).toEqual([]);
+    expect(store.listProbeIntents()).toMatchObject([{
+      operationId: "probe-operation",
+      lifecycleState: "creating",
+    }]);
+
+    store.assignProbeScenario("https://eu1.make.com", "probe-operation", 44);
+    expect(store.get("https://eu1.make.com", 44)).toMatchObject({
+      scenarioId: 44,
+      operationId: "probe-operation",
+      lifecycleState: "created",
+      lastVerifiedFingerprint: "requested",
+    });
+    expect(store.listPending()).toMatchObject([{
+      scenarioId: 44,
+      operationId: "probe-operation",
+      lifecycleState: "created",
+    }]);
+    expect(store.listProbeIntents()).toEqual([]);
+    store.update("https://eu1.make.com", 44, { lifecycleState: "inactive" });
+    expect(store.get("https://eu1.make.com", 44)?.lifecycleState).toBe("inactive");
+  });
+
+  test("can discard a pre-create operation intent after a definitive create failure", () => {
+    const store = new SqliteOwnershipStore({ dbPath: ":memory:" });
+    store.beginProbe({
+      operationId: "probe-operation",
+      teamId: 21,
+      organizationId: 9,
+      baseUrl: "https://eu1.make.com",
+      createdAt: "2026-07-23T10:00:00.000Z",
+      updatedAt: "2026-07-23T10:00:00.000Z",
+      lastVerifiedFingerprint: "requested",
+      remoteVerifiedAt: null,
+      lifecycleState: "creating",
+      executionId: null,
+    });
+    store.discardProbeIntent("https://eu1.make.com", "probe-operation");
+    expect(store.listPending()).toEqual([]);
+    expect(() => store.assignProbeScenario(
+      "https://eu1.make.com",
+      "probe-operation",
+      44,
+    )).toThrow("intent");
+  });
+
   test("uses WAL and persists lifecycle updates under a unique base URL and scenario ID", () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), "ownership-")), "state.sqlite");
     const store = new SqliteOwnershipStore({ dbPath });

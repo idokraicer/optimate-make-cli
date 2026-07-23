@@ -16,6 +16,10 @@ function harness(overrides: Record<string, unknown> = {}) {
       { scenarioId: 44, lifecycleState: "inactive" },
       { scenarioId: 99, lifecycleState: "cleanup_failed" },
     ],
+    listProbeIntents: () => [{
+      operationId: "recovery-operation",
+      lifecycleState: "creating",
+    }],
   };
   registerProbeCommand(program, {
     resolveTarget: async () => ({
@@ -158,6 +162,12 @@ describe("probe command", () => {
       ok: false,
       error: { code: "PROBE_CLEANUP_FAILED" },
       data: { scenarioId: 44, scenarioActive: true },
+      meta: {
+        pendingRecovery: [{
+          operationId: "recovery-operation",
+          lifecycleState: "creating",
+        }],
+      },
     });
     expect(JSON.stringify(h.output[0])).not.toContain("private-secret");
     process.exitCode = originalExitCode;

@@ -92,6 +92,19 @@ export async function runOwnedProbe(
   // Open the durable store before the first remote mutation.
   deps.ownership.listPending();
   const requestedFingerprint = await deps.fingerprint(sentBlueprint);
+  const intentCreatedAt = now();
+  deps.ownership.beginProbe({
+    operationId,
+    teamId: request.teamId,
+    organizationId: request.organizationId,
+    baseUrl,
+    createdAt: intentCreatedAt,
+    updatedAt: intentCreatedAt,
+    lastVerifiedFingerprint: requestedFingerprint,
+    remoteVerifiedAt: null,
+    lifecycleState: "creating",
+    executionId: null,
+  });
 
   try {
     throwIfAborted(request.signal);
@@ -100,7 +113,6 @@ export async function runOwnedProbe(
       blueprint: sentBlueprint,
       scheduling: { type: "on-demand" },
       confirmed: true,
-      signal: request.signal,
     });
     scenarioId = created.id;
     scenarioActive = created.isActive;
@@ -111,20 +123,12 @@ export async function runOwnedProbe(
       throw new Error("The created scenario ID already has an ownership record.");
     }
 
-    const createdAt = now();
-    deps.ownership.put({
-      scenarioId,
-      operationId,
-      teamId: request.teamId,
-      organizationId: request.organizationId,
-      baseUrl,
-      createdAt,
-      updatedAt: createdAt,
-      lastVerifiedFingerprint: requestedFingerprint,
-      remoteVerifiedAt: null,
-      lifecycleState: "created",
-      executionId: null,
-    });
+    try {
+      deps.ownership.assignProbeScenario(baseUrl, operationId, scenarioId);
+    } catch (error) {
+      cleanupFailed = true;
+      throw error;
+    }
 
     const { blueprint: verifiedBlueprint } = await deps.client.fetchBlueprint(scenarioId);
     const scenarioInterface = await deps.client.fetchScenarioInterface(scenarioId, request.signal);
@@ -157,7 +161,7 @@ export async function runOwnedProbe(
     throwIfAborted(request.signal);
     const initial = await deps.client.runScenario(
       scenarioId,
-      { data: validation.normalized, responsive: true },
+      { data: validation.normalized, responsive: false },
       request.signal,
     );
     executionId = initial.executionId;
@@ -205,6 +209,9 @@ export async function runOwnedProbe(
     }));
   } catch (error) {
     primaryError = error;
+    if (scenarioId === null) {
+      deps.ownership.discardProbeIntent(baseUrl, operationId);
+    }
     if (isAbortError(error)) executionStatus = "CANCELLED";
     const assignedExecutionId = executionIdFromError(error);
     if (scenarioId !== null && executionId === null && assignedExecutionId !== null) {
@@ -300,17 +307,11 @@ async function waitForTerminalExecution(
   deps: ProbeDependencies,
   scenarioId: number,
   executionId: string,
-  initial: { status?: string; outputs?: object },
+  _initial: { status?: string; outputs?: object },
   signal?: AbortSignal,
 ): Promise<ExecutionDetails> {
-  let current: ExecutionDetails | null = isTerminal(initial.status)
-    ? {
-        status: initial.status as ExecutionDetails["status"],
-        ...(isRecord(initial.outputs) ? { outputs: initial.outputs } : {}),
-      }
-    : null;
   let delay = 250;
-  while (!current) {
+  while (true) {
     throwIfAborted(signal);
     const details = await deps.client.fetchExecutionDetails(scenarioId, executionId, signal);
     if (details.status !== "RUNNING") return details;
@@ -318,7 +319,6 @@ async function waitForTerminalExecution(
     await (deps.sleep ?? abortableSleep)(delay, signal);
     delay = Math.min(delay * 2, 5_000);
   }
-  return current;
 }
 
 function buildResult(
@@ -340,10 +340,6 @@ function normalizeTerminalStatus(status: string): ProbeResult["executionStatus"]
   return normalized === "SUCCESS" || normalized === "WARNING" || normalized === "ERROR"
     ? normalized
     : "UNKNOWN";
-}
-
-function isTerminal(status: string | undefined): boolean {
-  return status === "SUCCESS" || status === "WARNING" || status === "ERROR";
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

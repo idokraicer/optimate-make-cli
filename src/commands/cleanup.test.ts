@@ -11,11 +11,12 @@ async function harness(options: {
   remote?: Record<string, unknown>;
   remoteBlueprint?: unknown;
   deleteImpl?: () => Promise<number>;
+  recoveryIntent?: Record<string, unknown> | null;
 } = {}) {
   const output: unknown[] = [];
   let deletes = 0;
   const fingerprint = await fingerprintBlueprint(blueprint);
-  const owned = options.owned === null ? null : {
+  let owned = options.owned === null ? null : {
     scenarioId: 44,
     operationId: "op",
     teamId: 21,
@@ -31,9 +32,31 @@ async function harness(options: {
   } as OwnedScenarioRecord;
   const store = {
     get: () => owned,
+    getProbeIntent: () => options.recoveryIntent ?? null,
+    assignProbeScenario: (
+      baseUrl: string,
+      operationId: string,
+      scenarioId: number,
+    ) => {
+      owned = {
+        scenarioId,
+        operationId,
+        teamId: Number(options.recoveryIntent?.teamId),
+        organizationId: Number(options.recoveryIntent?.organizationId),
+        baseUrl,
+        createdAt: String(options.recoveryIntent?.createdAt),
+        updatedAt: String(options.recoveryIntent?.updatedAt),
+        lastVerifiedFingerprint: String(options.recoveryIntent?.lastVerifiedFingerprint),
+        remoteVerifiedAt: null,
+        lifecycleState: "created",
+        executionId: null,
+      };
+    },
     listPending: () => owned ? [owned] : [],
     markDeleted: () => { if (owned) owned.lifecycleState = "deleted"; },
-    update: () => undefined,
+    update: (_baseUrl: string, _scenarioId: number, patch: Partial<OwnedScenarioRecord>) => {
+      if (owned) Object.assign(owned, patch);
+    },
   };
   const client = {
     getBaseUrl: () => "https://eu1.make.com",
@@ -57,7 +80,12 @@ async function harness(options: {
     cliVersion: "test",
     writeOutput: (value) => output.push(value),
   });
-  return { program, output, get deletes() { return deletes; }, owned };
+  return {
+    program,
+    output,
+    get deletes() { return deletes; },
+    get owned() { return owned; },
+  };
 }
 
 describe("cleanup command", () => {
@@ -112,5 +140,34 @@ describe("cleanup command", () => {
     expect(h.deletes).toBe(1);
     expect(h.owned?.lifecycleState).toBe("deleted");
     expect(h.output[0]).toMatchObject({ ok: true, data: { deleted: true } });
+  });
+
+  test("recovers a provisional operation intent by the exact remote marker", async () => {
+    const operationId = "123e4567-e89b-12d3-a456-426614174000";
+    const h = await harness({
+      owned: null,
+      recoveryIntent: {
+        operationId,
+        teamId: 21,
+        organizationId: 9,
+        baseUrl: "https://eu1.make.com",
+        createdAt: "2026-07-23T10:00:00.000Z",
+        updatedAt: "2026-07-23T10:00:00.000Z",
+        lastVerifiedFingerprint: "requested",
+        lifecycleState: "creating",
+      },
+      remote: { name: `[make-fixer probe] Output probe [${operationId}]` },
+    });
+    await h.program.parseAsync(["cleanup", "-s", "44"], { from: "user" });
+    expect(h.output[0]).toMatchObject({
+      ok: true,
+      data: { scenarioId: 44, eligible: true },
+    });
+    expect(h.owned).toMatchObject({
+      scenarioId: 44,
+      operationId,
+      lifecycleState: "inactive",
+      remoteVerifiedAt: expect.any(String),
+    });
   });
 });
