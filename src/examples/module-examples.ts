@@ -3,7 +3,34 @@ import {
   sanitizeForIndex,
   type ScenarioIndexRecord,
 } from "../search/search-index";
-import { walkModules } from "../utils/blueprint-traversal";
+import {
+  walkModules,
+  type ModuleContainer,
+  type WalkedModule,
+} from "../utils/blueprint-traversal";
+
+const CONFIGURATION_LEAF = "<leaf>";
+
+export interface ModuleExampleStructuralContext {
+  path: string;
+  container: ModuleContainer;
+  depth: number;
+  parentModuleId: number | null;
+  parent: {
+    path: string;
+    id: number | null;
+    module: string;
+    version: number;
+    name: string | null;
+    metadata: unknown;
+  } | null;
+  containerMetadata: unknown | null;
+}
+
+export interface ModuleExampleFullDetails {
+  fragment: Module;
+  context: ModuleExampleStructuralContext;
+}
 
 export interface ModuleExample {
   scenarioId: number;
@@ -17,6 +44,7 @@ export interface ModuleExample {
   equivalentCount: number;
   equivalentLocations: Array<{ scenarioId: number; moduleId: number; path: string }>;
   fragment: Module;
+  full?: ModuleExampleFullDetails;
 }
 
 export interface ModuleExampleQuery {
@@ -55,8 +83,10 @@ export function findModuleExamples(
   records: ScenarioIndexRecord[],
   query: ModuleExampleQuery,
 ): ModuleExample[] {
-  const candidates = records.flatMap((record) =>
-    walkModules(record.sanitizedBlueprint.flow).flatMap(({ module, path }) => {
+  const candidates = records.flatMap((record) => {
+    const walked = walkModules(record.sanitizedBlueprint.flow);
+    return walked.flatMap((entry) => {
+      const { module, path } = entry;
       if (typeof module.id !== "number") return [];
       const fragment = sanitizeModuleFragment(module);
       if (!matchesQuery(record.scenarioId, fragment, query)) return [];
@@ -70,9 +100,12 @@ export function findModuleExamples(
         version: module.version ?? 0,
         signature: moduleConfigurationSignature(fragment),
         fragment,
+        fullDetails: query.full
+          ? buildFullDetails(entry, walked, fragment)
+          : undefined,
       }];
-    })
-  );
+    });
+  });
 
   candidates.sort(compareCandidate);
   const groups = new Map<string, typeof candidates>();
@@ -89,9 +122,18 @@ export function findModuleExamples(
       .map(({ scenarioId, moduleId, path }) => ({ scenarioId, moduleId, path }))
       .sort(compareLocation);
     return {
-      ...representative,
+      scenarioId: representative.scenarioId,
+      scenarioName: representative.scenarioName,
+      teamId: representative.teamId,
+      moduleId: representative.moduleId,
+      path: representative.path,
+      module: representative.module,
+      version: representative.version,
+      signature: representative.signature,
+      fragment: representative.fragment,
       equivalentCount: equivalentLocations.length,
       equivalentLocations,
+      ...(representative.fullDetails ? { full: representative.fullDetails } : {}),
     };
   }).sort((left, right) =>
     left.module.localeCompare(right.module)
@@ -136,8 +178,62 @@ function configurationShape(value: unknown): unknown {
         .map((key) => [key, configurationShape((value as Record<string, unknown>)[key])]),
     );
   }
-  if (value === null) return "null";
-  return typeof value;
+  return CONFIGURATION_LEAF;
+}
+
+function buildFullDetails(
+  entry: WalkedModule,
+  walked: WalkedModule[],
+  fragment: Module,
+): ModuleExampleFullDetails {
+  const parent = entry.parentModuleId === null
+    ? null
+    : walked
+      .filter((candidate) =>
+        candidate.module.id === entry.parentModuleId
+        && entry.path.startsWith(`${candidate.path}.`)
+      )
+      .sort((left, right) => right.path.length - left.path.length)[0] ?? null;
+
+  return sanitizeModuleFragment({
+    fragment,
+    context: {
+      path: entry.path,
+      container: entry.container,
+      depth: entry.depth,
+      parentModuleId: entry.parentModuleId,
+      parent: parent ? {
+        path: parent.path,
+        id: parent.module.id,
+        module: parent.module.module,
+        version: parent.module.version ?? 0,
+        name: parent.module.name ?? null,
+        metadata: parent.module.metadata ?? {},
+      } : null,
+      containerMetadata: immediateContainerMetadata(entry, parent),
+    },
+  });
+}
+
+function immediateContainerMetadata(
+  entry: WalkedModule,
+  parent: WalkedModule | null,
+): unknown | null {
+  if (!parent || (entry.container !== "route" && entry.container !== "branch")) return null;
+  const property = entry.container === "route" ? "routes" : "branches";
+  const directPath = new RegExp(
+    `^${escapeRegExp(parent.path)}\\.${property}\\[(\\d+)\\]\\.flow\\[\\d+\\]$`,
+  );
+  const match = entry.path.match(directPath);
+  if (!match) return null;
+  const container = parent.module[property]?.[Number(match[1])];
+  if (!container || typeof container !== "object") return null;
+  const { flow: _flow, ...metadata } = container;
+  return metadata;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function compareCandidate(
