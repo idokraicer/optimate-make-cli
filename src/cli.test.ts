@@ -83,6 +83,20 @@ describe("CLI commands", () => {
     expect(stdout).toContain("Compare local blueprint");
   });
 
+  test("CLI has inspect command with agent-safe output controls", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "inspect", "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).toContain("Inspect a scenario");
+    expect(stdout).toContain("--scenario");
+    expect(stdout).toContain("--module");
+    expect(stdout).toContain("--summary");
+    expect(stdout).toContain("--local");
+    expect(stdout).toContain("--human");
+  });
+
   test("CLI has push command", async () => {
     const proc = Bun.spawn(["bun", "src/cli.ts", "push", "--help"], {
       stdout: "pipe",
