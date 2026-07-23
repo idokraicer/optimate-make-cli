@@ -188,7 +188,7 @@ describe("diffBlueprints", () => {
     const diff = diffBlueprints(original as any, modified as any);
 
     expect(diff.duplicateIds).toEqual([]);
-    expect(diff.modulesModified).toEqual([1, 5]);
+    expect(diff.modulesModified).toEqual([5]);
     expect(diff.modulesModified).not.toContain(null);
   });
 

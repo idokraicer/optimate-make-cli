@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ifElseBlueprint from "../tests/fixtures/if-else-blueprint.json";
+import { fingerprintBlueprint } from "./utils/blueprint-fingerprint";
 
 async function runInspect(
   args: string[],
@@ -29,6 +30,38 @@ async function runInspect(
       ...(options.token ? { MAKE_API_TOKEN: options.token } : {}),
     },
   });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, code };
+}
+
+async function runCli(
+  commandName: string,
+  args: string[],
+  options: { cwd: string; preload?: string; input?: string } ,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  const command = ["bun"];
+  if (options.preload) command.push("--preload", options.preload);
+  command.push(join(process.cwd(), "src/cli.ts"), commandName, ...args);
+
+  const proc = Bun.spawn(command, {
+    cwd: options.cwd,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      ...process.env,
+      MAKE_API_TOKEN: "fake",
+      MAKE_FIXER_NO_UPDATE: "1",
+      MAKE_FIXER_RATE_DB: join(options.cwd, "rate.sqlite"),
+    },
+  });
+  if (options.input) proc.stdin.write(options.input);
+  proc.stdin.end();
+
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -122,6 +155,70 @@ describe("CLI commands", () => {
     const stdout = await new Response(proc.stdout).text();
     expect(stdout).toContain("--scenario");
     expect(stdout).toContain("Compare local blueprint");
+  });
+
+  test("fetch writes a secret-free fingerprint sidecar alongside the blueprint", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-fetch-sidecar-"));
+    const preload = join(directory, "mock-fetch.ts");
+    await Bun.write(preload, `
+      globalThis.fetch = async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/api/v2/teams/2186253")) return Response.json({ team: { organizationId: 8430514 } });
+        if (url.endsWith("/api/v2/organizations/8430514")) return Response.json({ organization: { license: { apiLimit: 60 } } });
+        if (url.endsWith("/api/v2/scenarios/6648651/blueprint")) return Response.json(${JSON.stringify({ blueprint: JSON.stringify(simpleBlueprint) })});
+        return new Response("not found", { status: 404 });
+      };
+    `);
+
+    const result = await runCli("fetch", ["-s", "https://eu1.make.com/2186253/scenarios/6648651/edit"], {
+      cwd: directory,
+      preload,
+    });
+    const sidecar = JSON.parse(await Bun.file(join(directory, "blueprints/.make-fixer/6648651.json")).text());
+    rmSync(directory, { recursive: true, force: true });
+
+    expect(result.code).toBe(0);
+    expect(sidecar).toMatchObject({
+      scenarioId: 6648651,
+      baseUrl: "https://eu1.make.com",
+      fingerprint: await fingerprintBlueprint(simpleBlueprint as Blueprint),
+    });
+    expect(Date.parse(sidecar.fetchedAt)).not.toBeNaN();
+    expect(JSON.stringify(sidecar)).not.toContain("fake");
+  });
+
+  test("validate adds semantic leaf changes only with --changes", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-validate-changes-"));
+    const local = structuredClone(simpleBlueprint) as Blueprint;
+    local.flow[1].mapper.query = "{{1.email}}";
+    await Bun.write(join(directory, "blueprints/6648651.json"), JSON.stringify(local));
+    const preload = join(directory, "mock-fetch.ts");
+    await Bun.write(preload, `
+      globalThis.fetch = async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/api/v2/teams/2186253")) return Response.json({ team: { organizationId: 8430514 } });
+        if (url.endsWith("/api/v2/organizations/8430514")) return Response.json({ organization: { license: { apiLimit: 60 } } });
+        if (url.endsWith("/api/v2/scenarios/6648651/blueprint")) return Response.json(${JSON.stringify({ blueprint: JSON.stringify(simpleBlueprint) })});
+        return new Response("not found", { status: 404 });
+      };
+    `);
+
+    const json = await runCli("validate", ["-s", "https://eu1.make.com/2186253/scenarios/6648651/edit", "--json", "--changes"], {
+      cwd: directory,
+      preload,
+    });
+    const human = await runCli("validate", ["-s", "https://eu1.make.com/2186253/scenarios/6648651/edit", "--changes"], {
+      cwd: directory,
+      preload,
+    });
+    rmSync(directory, { recursive: true, force: true });
+
+    expect(json.code).toBe(0);
+    const output = JSON.parse(json.stdout.slice(json.stdout.indexOf("{")));
+    expect(output.modulesModified).toEqual([2]);
+    expect(output.directlyModifiedModules).toEqual([2]);
+    expect(output.changes).toEqual([{ path: "flow[1].mapper.query", moduleId: 2, before: "{{1.phone}}", after: "{{1.email}}" }]);
+    expect(human.stdout).toContain("Directly modified modules: #2");
   });
 
   test("CLI has inspect command with agent-safe output controls", async () => {
@@ -286,6 +383,53 @@ describe("CLI commands", () => {
     const stdout = await new Response(proc.stdout).text();
     expect(stdout).toContain("--scenario");
     expect(stdout).toContain("Push a local blueprint");
+  });
+
+  test("push blocks remote drift before PATCH and forces confirmation for an override", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-push-drift-"));
+    const local = structuredClone(simpleBlueprint) as Blueprint;
+    const remote = structuredClone(simpleBlueprint) as Blueprint;
+    remote.flow[1].mapper.query = "{{1.remoteChange}}";
+    await Bun.write(join(directory, "blueprints/6648651.json"), JSON.stringify(local));
+    await Bun.write(join(directory, "blueprints/.make-fixer/6648651.json"), JSON.stringify({
+      scenarioId: 6648651,
+      baseUrl: "https://eu1.make.com",
+      fingerprint: await fingerprintBlueprint(local),
+      fetchedAt: new Date().toISOString(),
+    }));
+    const preload = join(directory, "mock-fetch.ts");
+    await Bun.write(preload, `
+      globalThis.fetch = async (input, init = {}) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/api/v2/teams/2186253")) return Response.json({ team: { organizationId: 8430514 } });
+        if (url.endsWith("/api/v2/organizations/8430514")) return Response.json({ organization: { license: { apiLimit: 60 } } });
+        if (url.endsWith("/api/v2/scenarios/6648651/blueprint")) return Response.json(${JSON.stringify({ blueprint: JSON.stringify(remote) })});
+        if (url.endsWith("/api/v2/scenarios/6648651") && init.method === "PATCH") {
+          console.error("PATCH_SENT");
+          return new Response(null, { status: 204 });
+        }
+        return new Response("not found", { status: 404 });
+      };
+    `);
+
+    const blocked = await runCli("push", ["-s", "https://eu1.make.com/2186253/scenarios/6648651/edit", "--yes"], {
+      cwd: directory,
+      preload,
+    });
+    const overridden = await runCli("push", ["-s", "https://eu1.make.com/2186253/scenarios/6648651/edit", "--yes", "--allow-remote-drift"], {
+      cwd: directory,
+      preload,
+      input: "n\n",
+    });
+    rmSync(directory, { recursive: true, force: true });
+
+    expect(blocked.code).toBe(4);
+    expect(blocked.stderr).toContain("REMOTE_DRIFT");
+    expect(blocked.stderr).not.toContain("PATCH_SENT");
+    expect(overridden.code).toBe(0);
+    expect(overridden.stdout).toContain("Continue despite remote drift? [y/N]");
+    expect(overridden.stdout).toContain("Aborted.");
+    expect(overridden.stderr).not.toContain("PATCH_SENT");
   });
 
   test("executions exposes agent-friendly time and compact output options", async () => {
