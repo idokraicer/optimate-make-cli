@@ -124,6 +124,17 @@ export const AppModuleSchema = z.object({
 export type MakeApp = z.infer<typeof MakeAppSchema>;
 export type AppModule = z.infer<typeof AppModuleSchema>;
 
+export interface ConnectionSummary {
+  id: number;
+  name: string;
+  accountName: string;
+  accountLabel: string;
+  packageName: string | null;
+  teamId: number;
+  scoped: boolean;
+  metadata: unknown;
+}
+
 // --- Analysis types ---
 
 export type IssueSeverity = "critical" | "warning" | "info";

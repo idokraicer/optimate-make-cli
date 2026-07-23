@@ -351,6 +351,93 @@ describe("MakeApiClient", () => {
     ]);
   });
 
+  test("lists and sanitizes every team connection page through the shared coordinator", async () => {
+    const urls: string[] = [];
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      organizationId: 9,
+      coordinator: {
+        request: async (url) => {
+          const value = String(url);
+          urls.push(value);
+          if (value.endsWith("/api/v2/teams/2186253")) {
+            return Response.json({ team: { id: 2186253, organizationId: 9 } });
+          }
+          if (value.endsWith("/api/v2/organizations/9")) {
+            return Response.json({ organization: { id: 9, license: { apiLimit: 60 } } });
+          }
+          const offset = Number(new URL(value).searchParams.get("pg[offset]") ?? 0);
+          return offset === 0
+            ? Response.json({
+                connections: [{
+                  id: 1,
+                  name: "CRM",
+                  accountName: "agent@example.test",
+                  accountLabel: "CRM",
+                  packageName: "monday",
+                  teamId: 2186253,
+                  scoped: true,
+                  metadata: {
+                    region: "eu",
+                    authorization: "hide",
+                    headers: [{ name: "apiKey", value: "hide too" }],
+                  },
+                  credentials: { token: "never return" },
+                }],
+                pg: { offset: 0, limit: 1, total: 2 },
+              })
+            : Response.json({
+                connections: [{
+                  id: 2,
+                  name: "HTTP",
+                  account: { name: "Agent", label: "API" },
+                  package: { name: "http" },
+                  teamId: 2186253,
+                  scoped: false,
+                  metadata: { resourceId: 991 },
+                }],
+                pg: { offset: 1, limit: 1, total: 2 },
+              });
+        },
+      },
+    });
+
+    const result = await client.listConnections(2186253);
+    expect(result).toEqual([
+      {
+        id: 1,
+        name: "CRM",
+        accountName: "agent@example.test",
+        accountLabel: "CRM",
+        packageName: "monday",
+        teamId: 2186253,
+        scoped: true,
+        metadata: {
+          region: "eu",
+          authorization: "[REDACTED]",
+          headers: [{ name: "apiKey", value: "[REDACTED]" }],
+        },
+      },
+      {
+        id: 2,
+        name: "HTTP",
+        accountName: "Agent",
+        accountLabel: "API",
+        packageName: "http",
+        teamId: 2186253,
+        scoped: false,
+        metadata: { resourceId: 991 },
+      },
+    ]);
+    expect(JSON.stringify(result)).not.toContain("never return");
+    expect(JSON.stringify(result)).not.toContain("hide too");
+    expect(urls.filter((url) => url.includes("/api/v2/connections"))).toEqual([
+      "https://eu1.make.com/api/v2/connections?teamId=2186253",
+      "https://eu1.make.com/api/v2/connections?teamId=2186253&pg%5Blimit%5D=1&pg%5Boffset%5D=1",
+    ]);
+  });
+
   test("returns completed pages and failure metadata when a later scenario page fails", async () => {
     const firstPage = Array.from({ length: 1000 }, (_, index) => ({ id: index + 1 }));
     const client = new MakeApiClient({
