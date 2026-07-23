@@ -117,6 +117,54 @@ describe("classifyApiResponse", () => {
     expect(error.message).not.toContain(digestSecret);
   });
 
+  test("fails closed for malformed assigned secret fields while preserving unrelated lines", async () => {
+    const password = "malformed-password-secret";
+    const passwordDirective = "password-following-directive";
+    const credentials = "malformed-credentials-secret";
+    const credentialDirective = "credentials-following-directive";
+    const response = new Response([
+      "Useful diagnostic line",
+      `password=${password}, next=${passwordDirective}; mode=unsafe`,
+      `Credentials: ${credentials}, next=${credentialDirective}; mode=unsafe`,
+      "Another useful diagnostic line",
+    ].join("\n"), { status: 500 });
+
+    const error = await classifyApiResponse(response);
+
+    expect(error.message).toContain("Useful diagnostic line");
+    expect(error.message).toContain("Another useful diagnostic line");
+    for (const secret of [password, passwordDirective, credentials, credentialDirective]) {
+      expect(error.message).not.toContain(secret);
+    }
+  });
+
+  test("fails closed for authorization and cookie header lines", async () => {
+    const secrets = [
+      "digest-nonce-secret",
+      "digest-response-secret",
+      "proxy-authorization-secret",
+      "cookie-session-secret",
+      "cookie-preference-secret",
+      "set-cookie-session-secret",
+      "set-cookie-token-secret",
+    ];
+    const response = new Response([
+      "Useful diagnostic line",
+      `Authorization: Digest username=\"alice\", nonce=\"${secrets[0]}\", response=\"${secrets[1]}\"`,
+      `Proxy-Authorization: Custom ${secrets[2]}, next=still-sensitive`,
+      `Cookie: session=${secrets[3]}; preference=${secrets[4]}`,
+      `Set-Cookie: session=${secrets[5]}; HttpOnly; token=${secrets[6]}`,
+      "Another useful diagnostic line",
+    ].join("\n"), { status: 500 });
+
+    const error = await classifyApiResponse(response);
+
+    expect(error.message).toContain("Useful diagnostic line");
+    expect(error.message).toContain("Another useful diagnostic line");
+    for (const secret of secrets) expect(error.message).not.toContain(secret);
+    expect(error.message).not.toContain("still-sensitive");
+  });
+
   test("bounds non-JSON provider messages at 2,000 characters", async () => {
     const response = new Response("x".repeat(2_100), { status: 500 });
 
