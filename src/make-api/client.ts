@@ -510,9 +510,14 @@ export class MakeApiClient {
     return data.scenario ?? data;
   }
 
-  async fetchScenarioInterface(scenarioId: number): Promise<ScenarioInterface> {
+  async fetchScenarioInterface(
+    scenarioId: number,
+    signal?: AbortSignal,
+  ): Promise<ScenarioInterface> {
     const res = await this.request(
       `${this.baseUrl}/api/v2/scenarios/${scenarioId}/interface`,
+      {},
+      { signal },
     );
     if (!res.ok) {
       throw new Error(`Make API fetch scenario interface error ${res.status}: ${await res.text()}`);
@@ -531,11 +536,16 @@ export class MakeApiClient {
   async runScenario(
     scenarioId: number,
     body: { data?: object; responsive: boolean },
+    signal?: AbortSignal,
   ): Promise<{ executionId: string; status?: string; outputs?: object }> {
     const res = await this.request(
       `${this.baseUrl}/api/v2/scenarios/${scenarioId}/run`,
       { method: "POST", body: JSON.stringify(body) },
-      { organizationRateExempt: true },
+      {
+        organizationRateExempt: true,
+        retryTransientResponses: false,
+        signal,
+      },
     );
     const data = await readJsonSafely(res);
     const executionId = extractExecutionId(data);
@@ -552,7 +562,7 @@ export class MakeApiClient {
     const source = responsePayload(data);
     return {
       executionId,
-      ...(typeof source?.status === "string" ? { status: source.status } : {}),
+      ...(source?.status !== undefined ? { status: normalizeExecutionStatus(source.status) } : {}),
       ...(isObject(source?.outputs) ? { outputs: source.outputs } : {}),
     };
   }
@@ -560,9 +570,12 @@ export class MakeApiClient {
   async fetchExecutionDetails(
     scenarioId: number,
     executionId: string,
+    signal?: AbortSignal,
   ): Promise<ExecutionDetails> {
     const res = await this.request(
       `${this.baseUrl}/api/v2/scenarios/${scenarioId}/executions/${encodeURIComponent(executionId)}`,
+      {},
+      { signal },
     );
     if (!res.ok) {
       throw new Error(`Make API fetch execution details error ${res.status}: ${await res.text()}`);
@@ -693,6 +706,9 @@ function responsePayload(data: any): any {
 }
 
 function normalizeExecutionStatus(value: unknown): ExecutionDetails["status"] {
+  if (value === 1 || value === "1") return "SUCCESS";
+  if (value === 2 || value === "2") return "WARNING";
+  if (value === 3 || value === "3") return "ERROR";
   const status = String(value ?? "RUNNING").toUpperCase();
   return status === "SUCCESS" || status === "WARNING" || status === "ERROR"
     ? status

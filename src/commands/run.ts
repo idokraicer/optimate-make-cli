@@ -9,6 +9,7 @@ import {
   validateScenarioInput,
 } from "../make-api/scenario-runner";
 import { successEnvelope } from "./output";
+import { sanitizeForIndex } from "../search/search-index";
 
 type RunClient = Pick<
   MakeApiClient,
@@ -36,6 +37,7 @@ type RunDependencies = {
 type RunFailureCode =
   | "INVALID_DATA"
   | "RUN_STILL_RUNNING"
+  | "RUN_TIMEOUT"
   | "RUN_CANCELLED"
   | "UNKNOWN_API_ERROR";
 
@@ -55,6 +57,9 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
         typeof value === "string" ? value : JSON.stringify(value, null, 2),
       ));
       let executionId: string | null = null;
+      let timedOut = false;
+      let waitTimer: ReturnType<typeof setTimeout> | undefined;
+      let waitDeadline = 0;
       const controller = new AbortController();
       const cancel = () => controller.abort();
       process.once("SIGINT", cancel);
@@ -68,11 +73,15 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
           parsed.baseUrl,
           parsed.teamId,
         );
-        const scenarioInterface = await client.fetchScenarioInterface(parsed.scenarioId);
+        const scenarioInterface = await client.fetchScenarioInterface(
+          parsed.scenarioId,
+          controller.signal,
+        );
         const validation = validateScenarioInput(scenarioInterface, input);
         if (!validation.valid) {
           emit(runFailure("INVALID_DATA", "Scenario input does not match the live interface.", {
             issues: validation.issues,
+            interface: sanitizeRunOutput(scenarioInterface),
           }));
           process.exitCode = 1;
           return;
@@ -83,8 +92,8 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
             preview: true,
             confirmed: false,
             scenarioId: parsed.scenarioId,
-            input: validation.normalized,
-            interface: scenarioInterface,
+            input: sanitizeRunOutput(validation.normalized),
+            interface: sanitizeRunOutput(scenarioInterface),
           };
           emit(opts.human
             ? renderHumanPreview(preview)
@@ -93,11 +102,18 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
         }
 
         let initial: Awaited<ReturnType<RunClient["runScenario"]>>;
+        if (opts.wait) {
+          waitDeadline = Date.now() + timeoutMs;
+          waitTimer = setTimeout(() => {
+            timedOut = true;
+            controller.abort(new DOMException("Scenario run wait timed out.", "AbortError"));
+          }, timeoutMs);
+        }
         try {
           initial = await client.runScenario(parsed.scenarioId, {
             data: validation.normalized,
             responsive: Boolean(opts.wait),
-          });
+          }, controller.signal);
           executionId = initial.executionId;
         } catch (error) {
           if (!(error instanceof ScenarioRunRequestError) || !error.executionId) throw error;
@@ -123,10 +139,10 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
           result = await pollScenarioExecution({
             scenarioId: parsed.scenarioId,
             executionId,
-            timeoutMs,
+            timeoutMs: Math.max(1, waitDeadline - Date.now()),
             signal: controller.signal,
-            fetchExecutionDetails: (scenarioId, id) =>
-              client.fetchExecutionDetails(scenarioId, id),
+            fetchExecutionDetails: (scenarioId, id, signal) =>
+              client.fetchExecutionDetails(scenarioId, id, signal),
           });
         }
         if ("code" in result && result.code === "RUN_STILL_RUNNING") {
@@ -143,7 +159,7 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
           scenarioId: parsed.scenarioId,
           executionId,
           status: result.status ?? "RUNNING",
-          ...(result.outputs ? { outputs: result.outputs } : {}),
+          ...(result.outputs ? { outputs: sanitizeRunOutput(result.outputs) as object } : {}),
           ...(result.error !== undefined ? { executionError: "Scenario execution failed." } : {}),
         };
         emit(opts.human
@@ -151,13 +167,25 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
           : successEnvelope("run", data, runMeta(dependencies.cliVersion, client, parsed.scenarioId)));
       } catch (error) {
         const cancelled = error instanceof DOMException && error.name === "AbortError";
+        if (timedOut && executionId) {
+          emit(runFailure("RUN_STILL_RUNNING", "The scenario may still be running.", {
+            executionId,
+            status: "RUNNING",
+            retryable: true,
+          }));
+          process.exitCode = 3;
+          return;
+        }
         emit(runFailure(
-          cancelled ? "RUN_CANCELLED" : "INVALID_DATA",
-          cancelled ? "Waiting for the scenario run was cancelled." : safeRunMessage(error),
+          timedOut ? "RUN_TIMEOUT" : cancelled ? "RUN_CANCELLED" : "INVALID_DATA",
+          timedOut
+            ? "The run request timed out before Make returned an execution ID."
+            : cancelled ? "Waiting for the scenario run was cancelled." : safeRunMessage(error),
           executionId ? { executionId } : {},
         ));
         process.exitCode = 1;
       } finally {
+        if (waitTimer) clearTimeout(waitTimer);
         process.removeListener("SIGINT", cancel);
       }
     });
@@ -217,6 +245,29 @@ function safeRunMessage(error: unknown): string {
   return "Unable to run scenario.";
 }
 
+const SENSITIVE_OUTPUT_NAME =
+  /(?:authorization|cookie|token|secret|password|credential|api[-_]?key|session(?:id)?)/i;
+
+function sanitizeRunOutput(value: unknown, sensitiveDescriptor = false): unknown {
+  if (Array.isArray(value)) {
+    return value.map((child) => sanitizeRunOutput(child, sensitiveDescriptor));
+  }
+  if (typeof value === "string") return sanitizeForIndex(value);
+  if (!value || typeof value !== "object") return value;
+
+  const record = value as Record<string, unknown>;
+  const descriptorSensitive = sensitiveDescriptor || [record.name, record.key, record.header]
+    .some((candidate) => typeof candidate === "string" && SENSITIVE_OUTPUT_NAME.test(candidate));
+  return Object.fromEntries(Object.entries(record).map(([key, child]) => {
+    if (SENSITIVE_OUTPUT_NAME.test(key)) return [key, "[REDACTED]"];
+    if (
+      descriptorSensitive
+      && /^(?:value|values|content|defaultValue)$/i.test(key)
+    ) return [key, "[REDACTED]"];
+    return [key, sanitizeRunOutput(child, descriptorSensitive)];
+  }));
+}
+
 function runMeta(cliVersion: string, client: RunClient, scenarioId: number) {
   const rate = client.getRateLimitSnapshot();
   return {
@@ -230,7 +281,7 @@ function runMeta(cliVersion: string, client: RunClient, scenarioId: number) {
 
 function renderHumanPreview(preview: {
   scenarioId: number;
-  input: Record<string, unknown>;
+  input: unknown;
 }): string {
   return [
     `Scenario ${preview.scenarioId} run preview`,

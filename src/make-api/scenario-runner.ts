@@ -182,6 +182,7 @@ export async function pollScenarioExecution(options: {
   fetchExecutionDetails: (
     scenarioId: number,
     executionId: string,
+    signal?: AbortSignal,
   ) => Promise<ExecutionDetails>;
   signal?: AbortSignal;
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
@@ -191,37 +192,59 @@ export async function pollScenarioExecution(options: {
   const sleep = options.sleep ?? abortableSleep;
   const deadline = now() + options.timeoutMs;
   let delay = 250;
+  const timeoutController = new AbortController();
+  const propagateAbort = () => timeoutController.abort(options.signal?.reason);
+  options.signal?.addEventListener("abort", propagateAbort, { once: true });
+  const timeout = setTimeout(() => {
+    timeoutController.abort(new DOMException("Scenario run wait timed out.", "AbortError"));
+  }, options.timeoutMs);
 
-  while (true) {
-    throwIfAborted(options.signal);
-    if (now() >= deadline) {
-      return {
-        status: "RUNNING",
-        code: "RUN_STILL_RUNNING",
-        executionId: options.executionId,
-      };
+  try {
+    while (true) {
+      throwIfAborted(options.signal);
+      if (now() >= deadline) return stillRunning(options.executionId);
+      let details: ExecutionDetails;
+      try {
+        details = await options.fetchExecutionDetails(
+          options.scenarioId,
+          options.executionId,
+          timeoutController.signal,
+        );
+      } catch (error) {
+        if (options.signal?.aborted) throw abortError(options.signal);
+        if (timeoutController.signal.aborted) return stillRunning(options.executionId);
+        throw error;
+      }
+      if (details.status !== "RUNNING") return details;
+      const remaining = deadline - now();
+      if (remaining <= 0) return stillRunning(options.executionId);
+      await sleep(Math.min(delay, remaining, 5_000), timeoutController.signal);
+      delay = Math.min(delay * 2, 5_000);
     }
-    const details = await options.fetchExecutionDetails(
-      options.scenarioId,
-      options.executionId,
-    );
-    if (details.status !== "RUNNING") return details;
-    const remaining = deadline - now();
-    if (remaining <= 0) {
-      return {
-        status: "RUNNING",
-        code: "RUN_STILL_RUNNING",
-        executionId: options.executionId,
-      };
-    }
-    await sleep(Math.min(delay, remaining, 5_000), options.signal);
-    delay = Math.min(delay * 2, 5_000);
+  } catch (error) {
+    if (options.signal?.aborted) throw abortError(options.signal);
+    if (timeoutController.signal.aborted) return stillRunning(options.executionId);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", propagateAbort);
   }
+}
+
+function stillRunning(executionId: string): PollResult {
+  return { status: "RUNNING", code: "RUN_STILL_RUNNING", executionId };
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
-  throw new DOMException("The scenario run wait was cancelled.", "AbortError");
+  throw abortError(signal);
+}
+
+function abortError(signal?: AbortSignal): DOMException {
+  if (signal?.reason instanceof DOMException && signal.reason.name === "AbortError") {
+    return signal.reason;
+  }
+  return new DOMException("The scenario run wait was cancelled.", "AbortError");
 }
 
 async function abortableSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
