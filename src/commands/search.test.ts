@@ -203,4 +203,45 @@ describe("search command", () => {
       },
     });
   });
+
+  test("emits capability error envelopes when organization listing fails before page one", async () => {
+    const cases = [
+      { status: 401, code: "AUTH_INVALID" },
+      { status: 402, code: "PLAN_RESTRICTED" },
+      { status: 403, code: "SCOPE_MISSING" },
+      { status: 404, code: "NOT_FOUND" },
+    ];
+    for (const { status, code } of cases) {
+      const output: any[] = [];
+      const program = new Command().exitOverride();
+      registerSearchCommand(program, {
+        cliVersion: "test",
+        createClient: async () => ({
+          listAllScenarios: async () => {
+            throw new Error(`Make API list scenarios error ${status}: private provider body`);
+          },
+        } as any),
+        parseMakeUrl: () => ({ organizationId: 99, baseUrl: "https://eu1.make.com" }),
+        indexRoot: "/tmp/not-used-first-page-failure",
+        writeOutput: (value) => output.push(value),
+      });
+
+      process.exitCode = 0;
+      await program.parseAsync([
+        "search",
+        "--from-url",
+        "https://eu1.make.com/organization/99/dashboard",
+        "--query",
+        "anything",
+      ], { from: "user" });
+
+      expect(output[0]).toMatchObject({
+        ok: false,
+        command: "search",
+        error: { code, httpStatus: status, retryable: false },
+      });
+      expect(JSON.stringify(output[0])).not.toContain("private provider body");
+    }
+    process.exitCode = 0;
+  });
 });

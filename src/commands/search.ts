@@ -78,6 +78,7 @@ export function registerSearchCommand(program: Command, dependencies: SearchDepe
             pagesFetched: listing.pages.length,
             failedOffset: listing.failedOffset,
             failedStatus: listing.failedStatus ?? null,
+            failure: listing.failure ?? null,
           },
         };
 

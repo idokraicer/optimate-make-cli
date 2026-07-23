@@ -72,6 +72,35 @@ describe("search index primitives", () => {
       .not.toMatch(/dXNlcjpwYXNz|private-session|sk-live-private/);
   });
 
+  test("uses generalized separator-insensitive descriptor redaction for compound credentials", () => {
+    const raw = blueprint("safe");
+    raw.flow[0].mapper.headers = [
+      { name: "Private-Token", value: "private-token-value" },
+      { key: "X_Access_Token", content: "access-token-value" },
+      { header: "Client Secret", value: "client-secret-value" },
+      { name: "Service.Password", value: "password-value" },
+      { key: "Connection-Credentials", values: ["credential-value"] },
+      { header: "User Session ID", defaultValue: "session-value" },
+    ];
+
+    const sanitized = sanitizeForIndex(raw) as Blueprint;
+    const flat = flattenSearchDocument(sanitized);
+    const serialized = JSON.stringify({ sanitized, flat });
+    expect(serialized).not.toMatch(
+      /private-token-value|access-token-value|client-secret-value|password-value|credential-value|session-value/,
+    );
+    expect(sanitized.flow[0].mapper.headers.map((header: any) =>
+      header.value ?? header.content ?? header.values ?? header.defaultValue
+    )).toEqual([
+      "[REDACTED]",
+      "[REDACTED]",
+      "[REDACTED]",
+      "[REDACTED]",
+      "[REDACTED]",
+      "[REDACTED]",
+    ]);
+  });
+
   test("flattens nested module context and matches keys, values, Hebrew, regex, and exact fields", () => {
     const entries = flattenSearchDocument(sanitizeForIndex(blueprint("Send Customer")));
     const enriched = entries.map((entry) => ({
@@ -149,6 +178,9 @@ describe("refreshSearchIndex", () => {
         fresh.flow[0].mapper.headers = [
           { name: "Authorization", value: "Basic persisted-private" },
           { key: "X-API-Key", value: "sk-persisted-private" },
+          { name: "Private-Token", value: "persisted-private-token" },
+          { key: "X-Access-Token", content: "persisted-access-token" },
+          { header: "Client-Secret", value: "persisted-client-secret" },
         ];
         return { blueprint: fresh, raw: { secret: "must-not-persist" } };
       },
@@ -178,7 +210,17 @@ describe("refreshSearchIndex", () => {
     expect(persisted).not.toContain("do-not-store");
     expect(persisted).not.toContain("cache-secret");
     expect(persisted).not.toContain("persisted-private");
+    expect(persisted).not.toMatch(/persisted-private-token|persisted-access-token|persisted-client-secret/);
     expect(persisted).toContain("[REDACTED]");
+    const persistedRecord = JSON.parse(persisted).records.find(
+      (record: ScenarioIndexRecord) => record.scenarioId === 2,
+    ) as ScenarioIndexRecord;
+    expect(JSON.stringify(persistedRecord.sanitizedBlueprint)).not.toMatch(
+      /persisted-private-token|persisted-access-token|persisted-client-secret/,
+    );
+    expect(JSON.stringify(persistedRecord.entries)).not.toMatch(
+      /persisted-private-token|persisted-access-token|persisted-client-secret/,
+    );
   });
 
   test("retains unseen cached scenarios when organization listing is incomplete", async () => {

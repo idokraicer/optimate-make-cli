@@ -19,6 +19,7 @@ import {
   type RateBucket,
   type RateLimitSnapshot,
 } from "./rate-limiter";
+import type { ApiErrorCode } from "./api-error";
 
 export interface MakeApiConfig {
   token: string;
@@ -61,6 +62,11 @@ export interface ScenarioListResult {
   complete: boolean;
   failedOffset: number | null;
   failedStatus?: number | null;
+  failure?: {
+    code: ApiErrorCode;
+    httpStatus: number | null;
+    retryable: boolean;
+  };
 }
 
 export class MakeApiClient {
@@ -443,12 +449,15 @@ export class MakeApiClient {
         }
         offset += SCENARIO_PAGE_SIZE;
       } catch (error) {
+        if (pages.length === 0) throw error;
+        const failedStatus = statusFromClientError(error);
         return {
           scenarios,
           pages,
           complete: false,
           failedOffset: offset,
-          failedStatus: statusFromClientError(error),
+          failedStatus,
+          failure: classifyScenarioListFailure(failedStatus),
         };
       }
     }
@@ -606,4 +615,23 @@ function statusFromClientError(error: unknown): number | null {
   if (!(error instanceof Error)) return null;
   const match = error.message.match(/\berror\s+(\d{3})\b/i);
   return match ? Number(match[1]) : null;
+}
+
+function classifyScenarioListFailure(status: number | null): {
+  code: ApiErrorCode;
+  httpStatus: number | null;
+  retryable: boolean;
+} {
+  if (status === 401) return { code: "AUTH_INVALID", httpStatus: status, retryable: false };
+  if (status === 402) return { code: "PLAN_RESTRICTED", httpStatus: status, retryable: false };
+  if (status === 403) return { code: "SCOPE_MISSING", httpStatus: status, retryable: false };
+  if (status === 404) return { code: "NOT_FOUND", httpStatus: status, retryable: false };
+  if (status === 405 || status === 501) {
+    return { code: "NOT_SUPPORTED", httpStatus: status, retryable: false };
+  }
+  if (status === 429) return { code: "RATE_LIMITED", httpStatus: status, retryable: true };
+  if (status === null || status >= 500) {
+    return { code: "TRANSIENT", httpStatus: status, retryable: true };
+  }
+  return { code: "INVALID_DATA", httpStatus: status, retryable: false };
 }
