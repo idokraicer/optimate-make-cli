@@ -1,4 +1,4 @@
-import type { Blueprint } from "../make-api/types";
+import type { Blueprint, Module } from "../make-api/types";
 import { walkModules } from "./blueprint-traversal";
 
 export interface LeafChange {
@@ -98,35 +98,74 @@ function diffLeaves(before: unknown, after: unknown, path = ""): UnownedLeafChan
   return [{ path, before, after }];
 }
 
-function moduleOwner(
-  path: string,
-  before: Blueprint,
-  after: Blueprint,
-): { moduleId: number | null; parentModuleId: number | null } {
-  const candidates = [...walkModules(before.flow), ...walkModules(after.flow)]
-    .filter((walked) => path === walked.path || path.startsWith(`${walked.path}.`))
-    .sort((left, right) => right.path.length - left.path.length);
-  const owner = candidates[0];
-  return {
-    moduleId: owner?.module.id ?? null,
-    parentModuleId: owner?.parentModuleId ?? null,
-  };
+interface IdentifiedModule {
+  id: number;
+  path: string;
+  module: Module;
+}
+
+const NESTED_MODULE_PROPERTIES = new Set(["routes", "branches", "onerror"]);
+
+function identifiedModules(blueprint: Blueprint): IdentifiedModule[] {
+  const grouped = new Map<number, IdentifiedModule[]>();
+  for (const walked of walkModules(blueprint.flow)) {
+    if (typeof walked.module.id !== "number") continue;
+    const entries = grouped.get(walked.module.id) ?? [];
+    entries.push({ id: walked.module.id, path: walked.path, module: walked.module });
+    grouped.set(walked.module.id, entries);
+  }
+  return [...grouped.values()]
+    .filter((entries) => entries.length === 1)
+    .map(([entry]) => entry);
+}
+
+function ownModuleContent(module: Module): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(module).filter(([key]) => !NESTED_MODULE_PROPERTIES.has(key)),
+  );
+}
+
+function ancestorIds(path: string, modules: IdentifiedModule[]): number[] {
+  return modules
+    .filter((entry) => path.startsWith(`${entry.path}.`))
+    .map((entry) => entry.id);
 }
 
 export function semanticDiff(before: Blueprint, after: Blueprint): SemanticDiff {
   const direct = new Set<number>();
   const ancestors = new Set<number>();
-  const changes = diffLeaves(before, after).map((change) => {
-    const owner = moduleOwner(change.path, before, after);
-    if (typeof owner.moduleId === "number") direct.add(owner.moduleId);
-    if (typeof owner.parentModuleId === "number") ancestors.add(owner.parentModuleId);
-    return { ...change, moduleId: owner.moduleId };
-  });
+  const beforeModules = new Map(identifiedModules(before).map((entry) => [entry.id, entry]));
+  const afterModules = identifiedModules(after);
+  const beforeTopLevel = { ...before } as Record<string, unknown>;
+  const afterTopLevel = { ...after } as Record<string, unknown>;
+  delete beforeTopLevel.flow;
+  delete afterTopLevel.flow;
+
+  const changes: LeafChange[] = diffLeaves(beforeTopLevel, afterTopLevel).map((change) => ({
+    ...change,
+    moduleId: null,
+  }));
+
+  for (const afterModule of afterModules) {
+    const beforeModule = beforeModules.get(afterModule.id);
+    if (!beforeModule) continue;
+    const moduleChanges = diffLeaves(
+      ownModuleContent(beforeModule.module),
+      ownModuleContent(afterModule.module),
+      afterModule.path,
+    );
+    if (moduleChanges.length === 0) continue;
+    direct.add(afterModule.id);
+    for (const ancestorId of ancestorIds(afterModule.path, afterModules)) {
+      ancestors.add(ancestorId);
+    }
+    changes.push(...moduleChanges.map((change) => ({ ...change, moduleId: afterModule.id })));
+  }
 
   for (const moduleId of direct) ancestors.delete(moduleId);
   return {
     directlyModifiedModules: [...direct].sort((left, right) => left - right),
     ancestorModules: [...ancestors].sort((left, right) => left - right),
-    changes,
+    changes: changes.sort((left, right) => left.path.localeCompare(right.path)),
   };
 }

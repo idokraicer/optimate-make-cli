@@ -1,6 +1,5 @@
 import { walkModules } from "../utils/blueprint-traversal";
 import type { Blueprint } from "../make-api/types";
-import { semanticDiff } from "../utils/semantic-diff";
 
 export interface BlueprintDiff {
   modulesAdded: number[];
@@ -139,10 +138,19 @@ export function diffBlueprints(original: Blueprint, modified: Blueprint): Bluepr
     seen.add(id);
   }
 
-  const semantic = semanticDiff(original, modified);
-  const modulesModified = semantic.directlyModifiedModules.filter(
-    (moduleId) => origIds.has(moduleId) && modIdSet.has(moduleId),
+  const origMap = new Map(
+    origModules
+      .filter(({ module }) => isNumericId(module.id))
+      .map(({ module }) => [module.id, module]),
   );
+  const modulesModified: number[] = [];
+  for (const walked of modModules) {
+    if (!isNumericId(walked.module.id)) continue;
+    const orig = origMap.get(walked.module.id);
+    if (orig && JSON.stringify(orig) !== JSON.stringify(walked.module)) {
+      modulesModified.push(walked.module.id);
+    }
+  }
 
   return {
     modulesAdded: [...new Set(modulesAdded)],
