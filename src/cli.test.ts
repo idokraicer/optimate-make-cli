@@ -83,6 +83,25 @@ function expectInspectFailure(result: { stdout: string; stderr: string; code: nu
 }
 
 describe("CLI commands", () => {
+  test("CLI exposes owned scenario creation and guarded cleanup", async () => {
+    const create = Bun.spawn(["bun", "src/cli.ts", "create", "--help"], {
+      stdout: "pipe",
+      env: { ...process.env, MAKE_FIXER_NO_UPDATE: "1", MAKE_FIXER_RATE_DB: ":memory:" },
+    });
+    const cleanup = Bun.spawn(["bun", "src/cli.ts", "cleanup", "--help"], {
+      stdout: "pipe",
+      env: { ...process.env, MAKE_FIXER_NO_UPDATE: "1", MAKE_FIXER_RATE_DB: ":memory:" },
+    });
+    const [createHelp, cleanupHelp] = await Promise.all([
+      new Response(create.stdout).text(),
+      new Response(cleanup.stdout).text(),
+    ]);
+    expect(createHelp).toContain("owned on-demand scenario");
+    expect(createHelp).toContain("--no-probe-label");
+    expect(cleanupHelp).toContain("verified owned scenario");
+    expect(cleanupHelp).toContain("--delete");
+  });
+
   test("CLI exposes organization examples and scoped connections discovery", async () => {
     const examples = Bun.spawn(["bun", "src/cli.ts", "examples", "--help"], {
       stdout: "pipe",

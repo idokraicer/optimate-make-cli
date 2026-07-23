@@ -7,6 +7,8 @@ import {
   type MakeApp,
   type AppModule,
   type ConnectionSummary,
+  type CreateScenarioInput,
+  type ScenarioDetails,
 } from "./types";
 import { BUILTIN_MODULES } from "../data/builtin-modules";
 import {
@@ -75,6 +77,14 @@ export interface ScenarioListResult {
   };
 }
 
+export class AmbiguousCreateError extends Error {
+  readonly code = "AMBIGUOUS_CREATE";
+  constructor(readonly matches: number[]) {
+    super("More than one scenario matched the creation operation marker.");
+    this.name = "AmbiguousCreateError";
+  }
+}
+
 export class MakeApiClient {
   private token: string;
   private baseUrl: string;
@@ -96,6 +106,10 @@ export class MakeApiClient {
 
   getScenarioUrl(scenarioId: number): string {
     return `${this.baseUrl}/api/v2/scenarios/${scenarioId}`;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
   }
 
   getExecutionLogUrl(scenarioId: number, executionId: string): string {
@@ -605,6 +619,99 @@ export class MakeApiClient {
     return data.scenario ?? data;
   }
 
+  async createScenario(input: CreateScenarioInput): Promise<ScenarioDetails> {
+    if (!input.confirmed) {
+      throw new Error("Scenario creation requires explicit confirmation.");
+    }
+    const marker = operationMarker(input.blueprint.name);
+    const body = {
+      blueprint: JSON.stringify(input.blueprint),
+      teamId: input.teamId,
+      scheduling: JSON.stringify(input.scheduling),
+    };
+    const reconcile = marker
+      ? async (): Promise<Response | undefined> => {
+          const result = await this.listAllScenarios({ teamId: input.teamId });
+          if (!result.complete) return undefined;
+          const matches = result.scenarios.filter((scenario) =>
+            String(scenario?.name ?? "").endsWith(marker)
+          );
+          if (matches.length > 1) {
+            throw new AmbiguousCreateError(matches.map((scenario) => Number(scenario.id)));
+          }
+          return matches.length === 1
+            ? Response.json({ scenario: matches[0] }, { status: 200 })
+            : undefined;
+        }
+      : async () => undefined;
+    let res = await this.request(
+      `${this.baseUrl}/api/v2/scenarios`,
+      { method: "POST", body: JSON.stringify(body) },
+      {
+        retryTransientResponses: false,
+        networkRetrySafe: false,
+        signal: input.signal,
+        reconcileMutation: reconcile,
+      },
+    );
+    if (res.status === 503) res = await reconcile() ?? res;
+    if (!res.ok) throw new Error(`Make API create scenario error ${res.status}.`);
+    return normalizeScenarioDetails(responsePayload(await readJsonSafely(res)));
+  }
+
+  async fetchScenarioDetails(scenarioId: number): Promise<ScenarioDetails> {
+    const res = await this.request(this.getScenarioUrl(scenarioId));
+    if (!res.ok) throw new Error(`Make API fetch scenario error ${res.status}.`);
+    return normalizeScenarioDetails(responsePayload(await readJsonSafely(res)));
+  }
+
+  async startScenario(scenarioId: number, signal?: AbortSignal): Promise<ScenarioDetails> {
+    return this.mutateScenarioState(scenarioId, "start", signal);
+  }
+
+  async stopScenario(scenarioId: number, signal?: AbortSignal): Promise<ScenarioDetails> {
+    return this.mutateScenarioState(scenarioId, "stop", signal);
+  }
+
+  async deleteScenario(scenarioId: number, signal?: AbortSignal): Promise<number> {
+    const reconcile = async (): Promise<Response | undefined> => {
+      const check = await this.request(this.getScenarioUrl(scenarioId), {}, { signal });
+      if (check.status === 404) return new Response(null, { status: 204 });
+      return undefined;
+    };
+    let res = await this.request(
+      this.getScenarioUrl(scenarioId),
+      { method: "DELETE" },
+      {
+        retryTransientResponses: false,
+        networkRetrySafe: false,
+        signal,
+        reconcileMutation: reconcile,
+      },
+    );
+    if (res.status === 503) res = await reconcile() ?? res;
+    if (!res.ok) throw new Error(`Make API delete scenario error ${res.status}.`);
+    return res.status;
+  }
+
+  private async mutateScenarioState(
+    scenarioId: number,
+    action: "start" | "stop",
+    signal?: AbortSignal,
+  ): Promise<ScenarioDetails> {
+    const res = await this.request(
+      `${this.getScenarioUrl(scenarioId)}/${action}`,
+      { method: "POST" },
+      {
+        retryTransientResponses: false,
+        networkRetrySafe: false,
+        signal,
+      },
+    );
+    if (!res.ok) throw new Error(`Make API ${action} scenario error ${res.status}.`);
+    return normalizeScenarioDetails(responsePayload(await readJsonSafely(res)));
+  }
+
   async fetchScenarioInterface(
     scenarioId: number,
     signal?: AbortSignal,
@@ -798,6 +905,28 @@ function isObject(value: unknown): value is Record<string, any> {
 function responsePayload(data: any): any {
   const response = isObject(data?.response) ? data.response : data;
   return isObject(response?.execution) ? response.execution : response;
+}
+
+function normalizeScenarioDetails(data: any): ScenarioDetails {
+  const source = data?.scenario ?? data;
+  const id = Number(source?.id);
+  const teamId = Number(source?.teamId ?? source?.team?.id);
+  if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(teamId) || teamId <= 0) {
+    throw new Error("Make API scenario response was missing a valid ID or team ID.");
+  }
+  return {
+    id,
+    name: typeof source.name === "string" ? source.name : "",
+    teamId,
+    isActive: source.isActive === true || source.isactive === true,
+    ...(typeof source.iswaiting === "boolean" ? { iswaiting: source.iswaiting } : {}),
+    scheduling: source.scheduling ?? null,
+  };
+}
+
+function operationMarker(name: string): string | null {
+  const match = name.match(/\[([0-9a-f]{8}-[0-9a-f-]{27,})\]\s*$/i);
+  return match ? `[${match[1]}]` : null;
 }
 
 function normalizeExecutionStatus(value: unknown): ExecutionDetails["status"] {

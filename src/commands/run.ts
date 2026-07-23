@@ -10,6 +10,7 @@ import {
 } from "../make-api/scenario-runner";
 import { successEnvelope } from "./output";
 import { sanitizeForIndex } from "../search/search-index";
+import type { OwnershipStore } from "../probes/ownership-store";
 
 type RunClient = Pick<
   MakeApiClient,
@@ -32,6 +33,7 @@ type RunDependencies = {
   };
   cliVersion: string;
   writeOutput?: (value: unknown) => void;
+  ownership?: Pick<OwnershipStore, "listPending">;
 };
 
 type RunFailureCode =
@@ -56,6 +58,8 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
         typeof value === "string" ? value : JSON.stringify(value, null, 2),
       ));
       let executionId: string | null = null;
+      let client: RunClient | null = null;
+      let scenarioId: number | null = null;
       let waitDeadline = 0;
       const controller = new AbortController();
       const cancel = () => controller.abort();
@@ -65,7 +69,8 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
         const input = await parseRunData(opts.data, opts.dataFile);
         const timeoutMs = parseRunTimeout(String(opts.timeout));
         const parsed = dependencies.parseScenarioInput(opts.scenario);
-        const client = await dependencies.resolveClient(
+        scenarioId = parsed.scenarioId;
+        client = await dependencies.resolveClient(
           parsed.scenarioId,
           parsed.baseUrl,
           parsed.teamId,
@@ -79,7 +84,7 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
           emit(runFailure("INVALID_DATA", "Scenario input does not match the live interface.", {
             issues: validation.issues,
             interface: sanitizeRunOutput(scenarioInterface),
-          }));
+          }, runPendingMeta(dependencies, client, scenarioId)));
           process.exitCode = 1;
           return;
         }
@@ -94,7 +99,7 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
           };
           emit(opts.human
             ? renderHumanPreview(preview)
-            : successEnvelope("run", preview, runMeta(dependencies.cliVersion, client, parsed.scenarioId)));
+            : successEnvelope("run", preview, runMeta(dependencies, client, parsed.scenarioId)));
           return;
         }
 
@@ -115,7 +120,7 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
             emit(runFailure("UNKNOWN_API_ERROR", "The run request failed after Make assigned an execution.", {
               executionId,
               httpStatus: error.httpStatus,
-            }));
+            }, runPendingMeta(dependencies, client, scenarioId)));
             process.exitCode = 1;
             return;
           }
@@ -152,7 +157,7 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
             executionId,
             status: "RUNNING",
             retryable: true,
-          }));
+          }, runPendingMeta(dependencies, client, scenarioId)));
           process.exitCode = 3;
           return;
         }
@@ -166,13 +171,14 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
         };
         emit(opts.human
           ? renderHumanResult(data)
-          : successEnvelope("run", data, runMeta(dependencies.cliVersion, client, parsed.scenarioId)));
+          : successEnvelope("run", data, runMeta(dependencies, client, parsed.scenarioId)));
       } catch (error) {
         const cancelled = error instanceof DOMException && error.name === "AbortError";
         emit(runFailure(
           cancelled ? "RUN_CANCELLED" : "INVALID_DATA",
           cancelled ? "Waiting for the scenario run was cancelled." : safeRunMessage(error),
           executionId ? { executionId } : {},
+          runPendingMeta(dependencies, client, scenarioId),
         ));
         process.exitCode = 1;
       } finally {
@@ -211,6 +217,7 @@ function runFailure(
   code: RunFailureCode,
   message: string,
   extra: Record<string, unknown> = {},
+  meta?: Record<string, unknown>,
 ): unknown {
   return {
     ok: false,
@@ -223,6 +230,7 @@ function runFailure(
       retryable: code === "RUN_STILL_RUNNING",
       ...extra,
     },
+    ...(meta ? { meta } : {}),
   };
 }
 
@@ -258,15 +266,39 @@ function sanitizeRunOutput(value: unknown, sensitiveDescriptor = false): unknown
   }));
 }
 
-function runMeta(cliVersion: string, client: RunClient, scenarioId: number) {
+function runMeta(dependencies: RunDependencies, client: RunClient, scenarioId: number) {
   const rate = client.getRateLimitSnapshot();
   return {
-    cliVersion,
+    cliVersion: dependencies.cliVersion,
     source: "live_scenario_interface",
     verifiedAt: new Date().toISOString(),
     scenarioId,
     rateLimit: rate,
+    pendingCleanup: safePending(dependencies.ownership),
   };
+}
+
+function runPendingMeta(
+  dependencies: RunDependencies,
+  client: RunClient | null,
+  scenarioId: number | null,
+) {
+  return {
+    cliVersion: dependencies.cliVersion,
+    source: "owned_scenario_lifecycle",
+    verifiedAt: new Date().toISOString(),
+    ...(scenarioId === null ? {} : { scenarioId }),
+    ...(client ? { rateLimit: client.getRateLimitSnapshot() } : {}),
+    pendingCleanup: safePending(dependencies.ownership),
+  };
+}
+
+function safePending(ownership?: Pick<OwnershipStore, "listPending">) {
+  try {
+    return ownership?.listPending() ?? [];
+  } catch {
+    return [];
+  }
 }
 
 function renderHumanPreview(preview: {

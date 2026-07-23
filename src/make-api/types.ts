@@ -91,6 +91,23 @@ export type ErrorHandler = z.infer<typeof ErrorHandlerSchema>;
 export type Blueprint = z.infer<typeof BlueprintSchema>;
 export type ModuleMetadata = z.infer<typeof ModuleMetadataSchema>;
 
+export interface CreateScenarioInput {
+  teamId: number;
+  blueprint: Blueprint;
+  scheduling: { type: "on-demand" };
+  confirmed?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface ScenarioDetails {
+  id: number;
+  name: string;
+  teamId: number;
+  isActive: boolean;
+  iswaiting?: boolean;
+  scheduling: unknown;
+}
+
 // --- Note types ---
 
 export interface Note {

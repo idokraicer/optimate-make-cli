@@ -18,6 +18,9 @@ import { registerRunCommand } from "./commands/run";
 import { registerDoctorCommand } from "./commands/doctor";
 import { registerExamplesCommand } from "./commands/examples";
 import { registerConnectionsCommand } from "./commands/connections";
+import { registerCreateCommand } from "./commands/create";
+import { registerCleanupCommand } from "./commands/cleanup";
+import { getDefaultOwnershipStore, type OwnershipStore } from "./probes/ownership-store";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
@@ -44,6 +47,15 @@ const KNOWN_ZONES = [
   "https://us1.make.com",
   "https://us2.make.com",
 ];
+const ownershipStore: OwnershipStore = {
+  put: (record) => getDefaultOwnershipStore().put(record),
+  get: (baseUrl, scenarioId) => getDefaultOwnershipStore().get(baseUrl, scenarioId),
+  update: (baseUrl, scenarioId, patch) =>
+    getDefaultOwnershipStore().update(baseUrl, scenarioId, patch),
+  listPending: () => getDefaultOwnershipStore().listPending(),
+  markDeleted: (baseUrl, scenarioId) =>
+    getDefaultOwnershipStore().markDeleted(baseUrl, scenarioId),
+};
 
 const toInt = (v: string) => parseInt(v, 10);
 
@@ -160,6 +172,7 @@ registerRunCommand(program, {
   resolveClient: resolveClientOrThrow,
   parseScenarioInput: parseInspectScenarioInput,
   cliVersion: pkg.version,
+  ownership: ownershipStore,
 });
 
 registerDoctorCommand(program, {
@@ -179,6 +192,57 @@ registerExamplesCommand(program, {
 registerConnectionsCommand(program, {
   createClient: createClientOrThrow,
   parseMakeUrl,
+  cliVersion: pkg.version,
+});
+
+registerCreateCommand(program, {
+  createClient: createClientOrThrow,
+  resolveTeam: async ({ team, fromUrl, baseUrl }) => {
+    const parsed = fromUrl ? parseMakeUrl(fromUrl) : {};
+    const optionTeamId = team === undefined ? undefined : Number(team);
+    if (
+      parsed.teamId !== undefined
+      && optionTeamId !== undefined
+      && parsed.teamId !== optionTeamId
+    ) {
+      throw new InspectInputError("--team does not match the team in --from-url.");
+    }
+    const teamId = parsed.teamId ?? optionTeamId;
+    if (!Number.isInteger(teamId) || teamId <= 0) {
+      throw new InspectInputError("create requires a positive --team ID or a team-scoped --from-url.");
+    }
+    const configured = (await resolveCredentialsOrThrow()).preferred;
+    const resolvedBaseUrl = normalizeMakeBaseUrl(parsed.baseUrl ?? baseUrl ?? configured);
+    const client = await createClientOrThrow(resolvedBaseUrl);
+    const teamDetails = await client.fetchTeam(teamId);
+    const organizationId = Number(
+      teamDetails.organizationId ?? teamDetails.organization?.id ?? teamDetails.organization_id,
+    );
+    if (!Number.isInteger(organizationId) || organizationId <= 0) {
+      throw new InspectInputError("Unable to resolve the team's organization.");
+    }
+    await client.discoverOrganization(organizationId);
+    return { teamId, organizationId, baseUrl: resolvedBaseUrl.replace(/\/+$/, "") };
+  },
+  readBlueprint: async (path) => JSON.parse(await Bun.file(path).text()),
+  ownership: ownershipStore,
+  cliVersion: pkg.version,
+});
+
+registerCleanupCommand(program, {
+  resolveClient: resolveClientOrThrow,
+  parseScenarioInput: parseInspectScenarioInput,
+  resolveOrganizationId: async (client, teamId) => {
+    const team = await client.fetchTeam(teamId);
+    const organizationId = Number(
+      team.organizationId ?? team.organization?.id ?? team.organization_id,
+    );
+    if (!Number.isInteger(organizationId) || organizationId <= 0) {
+      throw new InspectInputError("Unable to resolve the team's organization.");
+    }
+    return organizationId;
+  },
+  ownership: ownershipStore,
   cliVersion: pkg.version,
 });
 
@@ -1133,6 +1197,14 @@ function parseMakeUrl(input: string): {
   if (teamOnlyMatch) return { baseUrl, teamId: parseInt(teamOnlyMatch[1], 10) };
 
   return { baseUrl };
+}
+
+function normalizeMakeBaseUrl(input: string): string {
+  const normalized = input.replace(/\/+$/, "");
+  if (!/^https:\/\/(?:eu|us)\d+\.make\.com$/i.test(normalized)) {
+    throw new InspectInputError("The Make.com base URL must be an HTTPS eu*/us*.make.com zone.");
+  }
+  return normalized;
 }
 
 function parseScenarioInput(input: string): { scenarioId: number; teamId?: number; baseUrl?: string } {
