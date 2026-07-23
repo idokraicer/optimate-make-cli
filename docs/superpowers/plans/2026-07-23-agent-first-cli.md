@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the standalone Make Fixer CLI reliable and efficient for AI agents by fixing complete blueprint traversal and adding rate-aware inspection, search, execution, capability, diff, and Monday board-ID workflows.
+**Goal:** Make the standalone Make Fixer CLI reliable and efficient for AI agents by fixing complete blueprint traversal and adding rate-aware inspection, organization search, reusable module examples, scenario creation, execution, probing, and ownership-safe cleanup.
 
-**Architecture:** Introduce small command modules over an expanded `MakeApiClient`, with one canonical recursive blueprint walker and one cross-process request coordinator. New commands use stable JSON envelopes while existing commands and JSON shapes remain unchanged. All provider behavior is grounded in documented endpoints, mock HTTP contract tests, and safe live read-only probes.
+**Architecture:** Introduce small command modules over an expanded `MakeApiClient`, with one canonical recursive blueprint walker, one cross-process request coordinator, and a durable owned-probe registry. New commands use stable JSON envelopes while existing commands and JSON shapes remain unchanged. Provider-specific knowledge comes from real organization blueprints and connections; the CLI itself remains framework agnostic.
 
-**Tech Stack:** Bun 1.3+, TypeScript, Commander 14, Zod 4, `bun:test`, `bun:sqlite`, Make REST API v2, Monday GraphQL API.
+**Tech Stack:** Bun 1.3+, TypeScript, Commander 14, Zod 4, `bun:test`, `bun:sqlite`, Make REST API v2.
 
 ## Global Constraints
 
@@ -21,8 +21,11 @@
 - Never expose or cache tokens, passwords, authorization values, cookies, API keys, or credentials.
 - Remote mutation requires `--yes`; scenario runs preview by default.
 - Never automatically replay or resend an execution after an ambiguous timeout.
-- Dynamic Monday board mappings are never modified.
-- Only exact, unique, active, same-type Monday board matches may be synchronized.
+- Keep provider semantics in blueprints and example discovery; do not add provider-specific API integrations.
+- Never automatically delete a probe scenario; return a user cleanup decision after every probe.
+- `probe` may activate, stop, or deactivate only a scenario it created and recorded locally.
+- Cleanup deletion requires a matching ownership record, last verified remote fingerprint, inactive state, and `--delete --yes`.
+- The documented scenario-run endpoint is exempt from the organization rolling-rate bucket, but still honors cancellation and indefinite 429 retry.
 - Use Bun commands (`bun test`, `bun run typecheck`) and Bun APIs.
 - Preserve all pre-existing dirty-worktree changes. Do not stage or commit a file if doing so would include unrelated existing changes; use isolated commits only when the staged diff is exclusively owned by this plan.
 
@@ -37,7 +40,11 @@
 - `src/commands/search.ts` — organization resolution, incremental indexing, and search orchestration.
 - `src/commands/run.ts` — scenario interface validation, preview, execution, and polling.
 - `src/commands/doctor.ts` — safe capability probes and diagnostic result.
-- `src/commands/monday.ts` — Monday audit/sync CLI orchestration.
+- `src/commands/examples.ts` — organization module-example discovery and grouping.
+- `src/commands/connections.ts` — safe team connection discovery.
+- `src/commands/create.ts` — validated on-demand scenario creation and ownership recording.
+- `src/commands/probe.ts` — owned create/run/inspect/deactivate orchestration.
+- `src/commands/cleanup.ts` — read-only lifecycle status and guarded deletion.
 - `src/make-api/api-error.ts` — sanitized provider error parsing and capability classification.
 - `src/make-api/rate-limiter.ts` — cross-process rolling-window reservations and shared cooldowns.
 - `src/make-api/request-coordinator.ts` — pacing, retry, cancellation, and GET deduplication.
@@ -45,7 +52,9 @@
 - `src/utils/semantic-diff.ts` — exact leaf changes and ancestor classification.
 - `src/utils/blueprint-fingerprint.ts` — stable remote fingerprints and sidecar metadata.
 - `src/search/search-index.ts` — redacted flattened documents, cache, and matching.
-- `src/monday/board-reconciliation.ts` — pure extraction, classification, and scalar patch planning.
+- `src/examples/module-examples.ts` — module matching, signatures, grouping, and sanitized fragments.
+- `src/probes/ownership-store.ts` — SQLite-backed owned-scenario lifecycle records.
+- `src/probes/probe-runner.ts` — generic probe state machine with compensation.
 - Corresponding `*.test.ts` files beside every new implementation file.
 - `tests/fixtures/if-else-blueprint.json` — regression fixture with module 18 inside a branch and nested error routes.
 
@@ -117,7 +126,22 @@ git diff -- src/cli.ts src/make-api/client.ts README.md skills/make-fixer/SKILL.
 Expected: the existing `executions --since`, `--compact`, `--output`, and
 `--include-input` work remains present throughout subsequent tasks.
 
-- [ ] **Step 4: Commit only if the baseline file is isolated**
+- [ ] **Step 4: Checkpoint the existing execution-query WIP**
+
+If the baseline tests pass, commit only the already-present execution-query
+feature files so later task commits do not absorb them:
+
+```bash
+git add README.md skills/make-fixer/SKILL.md src/cli.ts src/cli.test.ts src/make-api/client.ts src/make-api/client.test.ts src/utils/execution-query.ts src/utils/execution-query.test.ts
+git diff --cached --check
+git commit -m "feat: improve execution querying"
+```
+
+Do not add `.agents/` or `AGENTS.md`. If the staged diff contains anything
+other than the already-recorded execution-query feature, unstage it and report
+`DONE_WITH_CONCERNS` rather than committing.
+
+- [ ] **Step 5: Commit the isolated baseline evidence**
 
 Run:
 
@@ -125,14 +149,13 @@ Run:
 git diff -- docs/superpowers/plans/2026-07-23-agent-first-cli-baseline.md
 ```
 
-If that is the only staged content:
+Then:
 
 ```bash
 git add docs/superpowers/plans/2026-07-23-agent-first-cli-baseline.md
+git diff --cached --check
 git commit -m "test: record agent-first cli baseline"
 ```
-
-Otherwise leave it uncommitted and continue without staging unrelated work.
 
 ---
 
@@ -483,6 +506,11 @@ transaction. Sleep outside transactions.
 Separate 429 from 503/network handling. Parse `Retry-After` as seconds or HTTP
 date. A missing 429 header yields 60,000 ms. Loop on 429 until success or abort.
 
+Allow request metadata to set `organizationRateExempt: true`. Use it only for
+`POST /scenarios/{scenarioId}/run`, which Make explicitly documents as exempt
+from organization request limits. Exempt calls skip SQLite reservations but
+retain cancellation, sanitized errors, and indefinite 429 retry.
+
 For GET requests, key in-flight deduplication by method, URL, and safe
 non-authorization headers. Do not include token values in keys or logs.
 
@@ -502,9 +530,14 @@ bun test src/make-api/rate-limiter.test.ts src/make-api/request-coordinator.test
 
 - [ ] **Step 8: Commit isolated rate-limit work**
 
-Do not stage `src/make-api/client.ts` if its existing execution-query changes
-would be captured unintentionally. If it overlaps, leave the full task
-uncommitted and document the reason in the baseline file.
+Task 1 must have checkpointed the execution-query changes first. Verify the
+staged diff is limited to this task:
+
+```bash
+git add src/make-api/rate-limiter.ts src/make-api/rate-limiter.test.ts src/make-api/request-coordinator.ts src/make-api/request-coordinator.test.ts src/make-api/fetch-retry.ts src/make-api/fetch-retry.test.ts src/make-api/client.ts src/make-api/client.test.ts
+git diff --cached --check
+git commit -m "feat: coordinate Make API rate limits"
+```
 
 ---
 
@@ -580,6 +613,14 @@ bun src/cli.ts inspect --help
 
 Expected: existing CLI help tests remain unchanged and new help lists all
 inspect flags.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/commands/inspect.ts src/commands/inspect.test.ts src/cli.ts src/cli.test.ts
+git diff --cached --check
+git commit -m "feat: add exact scenario inspection"
+```
 
 ---
 
@@ -677,6 +718,14 @@ Preserve current `modulesModified`.
 bun test src/utils/semantic-diff.test.ts src/utils/blueprint-fingerprint.test.ts src/agent/blueprint-editor.test.ts src/cli.test.ts
 ```
 
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/utils/semantic-diff.ts src/utils/semantic-diff.test.ts src/utils/blueprint-fingerprint.ts src/utils/blueprint-fingerprint.test.ts src/agent/blueprint-editor.ts src/agent/blueprint-editor.test.ts src/cli.ts src/cli.test.ts
+git diff --cached --check
+git commit -m "feat: add semantic blueprint drift protection"
+```
+
 ---
 
 ### Task 7: Add Organization-Wide Incremental Full-Text Search
@@ -707,9 +756,35 @@ export interface SearchMatch {
   snippet: string;
 }
 
+export interface SearchEntry {
+  scenarioId: number;
+  scenarioName: string;
+  teamId: number;
+  moduleId: number | null;
+  moduleType: string | null;
+  path: string;
+  key: string | null;
+  value: string;
+}
+
+export type SearchQuery =
+  | { kind: "literal"; value: string; caseSensitive: boolean }
+  | { kind: "regex"; pattern: string; caseSensitive: boolean }
+  | { kind: "field"; field: string; value: string; caseSensitive: boolean };
+
 export function sanitizeForIndex(value: unknown): unknown;
 export function flattenSearchDocument(value: unknown, basePath?: string): SearchEntry[];
 export function searchEntries(entries: SearchEntry[], query: SearchQuery): SearchMatch[];
+
+export interface ScenarioIndexRecord {
+  scenarioId: number;
+  scenarioName: string;
+  teamId: number;
+  lastEdit: string;
+  sanitizedBlueprint: Blueprint;
+  entries: SearchEntry[];
+  indexedAt: string;
+}
 ```
 
 - [ ] **Step 1: Write failing redaction and matching tests**
@@ -754,7 +829,8 @@ Store under:
 ```
 
 Persist after each fetched scenario with `lastEdit`, sanitized flattened
-entries, and fetch timestamp. Never persist raw unredacted blueprints.
+entries, a sanitized blueprint used by `examples`, and fetch timestamp. Never
+persist raw unredacted blueprints.
 
 - [ ] **Step 6: Implement organization-wide orchestration**
 
@@ -782,6 +858,14 @@ bun test src/search/search-index.test.ts src/commands/search.test.ts src/make-ap
 bun src/cli.ts search --help
 ```
 
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/search/search-index.ts src/search/search-index.test.ts src/commands/search.ts src/commands/search.test.ts src/make-api/client.ts src/make-api/client.test.ts src/cli.ts src/cli.test.ts
+git diff --cached --check
+git commit -m "feat: add organization blueprint search"
+```
+
 ---
 
 ### Task 8: Add Scenario Interface Validation, Run, and Polling
@@ -805,6 +889,20 @@ export interface ScenarioInterface {
   output?: ScenarioOutputField[] | null;
 }
 
+export interface ScenarioInputField {
+  name: string;
+  label?: string;
+  type: string;
+  required?: boolean;
+  specification?: unknown;
+}
+
+export type ScenarioOutputField = ScenarioInputField;
+
+export type InputValidationResult =
+  | { valid: true; normalized: Record<string, unknown> }
+  | { valid: false; issues: Array<{ path: string; message: string }> };
+
 export function validateScenarioInput(spec: ScenarioInterface, data: unknown): InputValidationResult;
 export function parseRunTimeout(value: string): number;
 
@@ -813,6 +911,14 @@ MakeApiClient.prototype.runScenario(
   scenarioId: number,
   body: { data?: object; responsive: boolean },
 ): Promise<{ executionId: string; status?: string; outputs?: object }>;
+MakeApiClient.prototype.fetchExecutionDetails(
+  scenarioId: number,
+  executionId: string,
+): Promise<{
+  status: "RUNNING" | "SUCCESS" | "WARNING" | "ERROR";
+  outputs?: Record<string, unknown>;
+  error?: unknown;
+}>;
 ```
 
 - [ ] **Step 1: Write failing input validation tests**
@@ -844,6 +950,8 @@ GET  /api/v2/scenarios/{scenarioId}/executions/{executionId}
 ```
 
 The run POST is sent only after `--yes`.
+Mark only this POST as `organizationRateExempt: true`; interface and execution
+status GETs remain within the organization rolling-rate bucket.
 
 - [ ] **Step 5: Implement bounded polling**
 
@@ -860,6 +968,14 @@ Run:
 
 ```bash
 bun test src/make-api/scenario-runner.test.ts src/commands/run.test.ts src/make-api/client.test.ts src/cli.test.ts
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/make-api/scenario-runner.ts src/make-api/scenario-runner.test.ts src/commands/run.ts src/commands/run.test.ts src/make-api/client.ts src/make-api/client.test.ts src/cli.ts src/cli.test.ts
+git diff --cached --check
+git commit -m "feat: run scenarios with durable outputs"
 ```
 
 ---
@@ -920,177 +1036,555 @@ bun test src/commands/doctor.test.ts src/cli.test.ts
 bun src/cli.ts doctor --help
 ```
 
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/commands/doctor.ts src/commands/doctor.test.ts src/cli.ts src/cli.test.ts
+git diff --cached --check
+git commit -m "feat: add Make capability diagnostics"
+```
+
 ---
 
-### Task 10: Add Monday Board-ID Audit and Local Sync
+### Task 10: Add Connection Discovery and Organization Module Examples
 
 **Files:**
-- Create: `src/monday/board-reconciliation.ts`
-- Create: `src/monday/board-reconciliation.test.ts`
-- Create: `src/commands/monday.ts`
-- Create: `src/commands/monday.test.ts`
+- Create: `src/examples/module-examples.ts`
+- Create: `src/examples/module-examples.test.ts`
+- Create: `src/commands/examples.ts`
+- Create: `src/commands/examples.test.ts`
+- Create: `src/commands/connections.ts`
+- Create: `src/commands/connections.test.ts`
+- Modify: `src/make-api/types.ts`
+- Modify: `src/make-api/client.ts`
+- Modify: `src/make-api/client.test.ts`
 - Modify: `src/cli.ts`
 - Modify: `src/cli.test.ts`
 
 **Interfaces:**
+- Consumes: `ScenarioIndexRecord`, `walkModules`, and the shared output envelope.
 - Produces:
 
 ```ts
-export type BoardReferenceStatus =
-  | "valid"
-  | "stale"
-  | "dynamic"
-  | "missing-label"
-  | "no-match"
-  | "ambiguous"
-  | "type-conflict"
-  | "inaccessible";
-
-export interface BoardReferenceAudit {
+export interface ModuleExample {
   scenarioId: number;
+  scenarioName: string;
+  teamId: number;
   moduleId: number;
   path: string;
-  boardPath: string;
-  currentBoardId: string;
-  savedBoardName: string | null;
-  expectedType: "board" | "sub_items_board";
-  status: BoardReferenceStatus;
-  replacementBoardId: string | null;
+  module: string;
+  version: number;
+  signature: string;
+  equivalentCount: number;
+  equivalentLocations: Array<{ scenarioId: number; moduleId: number; path: string }>;
+  fragment: Module;
 }
 
-export function extractMondayBoardReferences(blueprint: Blueprint, scenarioId: number): BoardReference[];
-export function classifyBoardReference(reference: BoardReference, boards: MondayBoard[]): BoardReferenceAudit;
-export function applyBoardSyncPlan(blueprint: Blueprint, plan: BoardReferenceAudit[]): Blueprint;
+export interface ModuleExampleQuery {
+  module?: string;
+  app?: string;
+  search?: string;
+  version?: number;
+  scenarioId?: number;
+  moduleId?: number;
+  full?: boolean;
+}
+
+export interface ConnectionSummary {
+  id: number;
+  name: string;
+  accountName: string;
+  accountLabel: string;
+  packageName: string | null;
+  teamId: number;
+  scoped: boolean;
+  metadata: unknown;
+}
+
+export function moduleConfigurationSignature(module: Module): string;
+export function findModuleExamples(
+  records: ScenarioIndexRecord[],
+  query: ModuleExampleQuery,
+): ModuleExample[];
+
+MakeApiClient.prototype.listConnections(teamId: number): Promise<ConnectionSummary[]>;
 ```
 
-- [ ] **Step 1: Write failing extraction tests**
+- [ ] **Step 1: Write failing example matching tests**
 
-Cover board IDs in mapper and parameters, nested branch modules, saved restore
-labels, subitem boards, dynamic expressions, blank labels, and modules without
-board fields.
+Create fixtures containing the same app action in top-level flow, a branch, and
+an error route. Assert exact module, app-prefix, version, literal search, and
+exact scenario/module selection all use canonical paths.
 
-- [ ] **Step 2: Write failing classification tests**
+- [ ] **Step 2: Write failing grouping and redaction tests**
 
-Cover all eight statuses. Assert only `stale` with one exact active same-type
-candidate receives a replacement.
+Assert examples with the same module/version and recursively sorted
+parameter/mapper/metadata key shapes share one signature. Assert mapper values,
+ordinary URLs, resource IDs, connection IDs, restore labels, and interface
+metadata remain usable while values under these case-insensitive keys are
+redacted:
 
-- [ ] **Step 3: Write failing patch tests**
+```ts
+["token", "secret", "password", "authorization", "apiKey", "cookie", "credentials"]
+```
 
-Assert only the exact scalar paths change and semantic diff reports only the
-target Monday modules.
+Assert `--full` is rejected unless both exact scenario ID and module ID are
+present.
+
+- [ ] **Step 3: Write failing connection contract tests**
+
+Assert `GET /api/v2/connections?teamId=2186253` is paged through the shared
+coordinator. The public result includes `id`, `name`, `accountName`,
+`accountLabel`, `packageName`, `teamId`, `scoped`, and sanitized metadata, but
+excludes authentication data and credentials.
 
 - [ ] **Step 4: Verify RED**
 
 ```bash
-bun test src/monday/board-reconciliation.test.ts src/commands/monday.test.ts
+bun test src/examples/module-examples.test.ts src/commands/examples.test.ts src/commands/connections.test.ts src/make-api/client.test.ts
 ```
 
-- [ ] **Step 5: Implement Monday API reader**
+- [ ] **Step 5: Implement deterministic example discovery**
 
-Read `MONDAY_TOKEN` from the current project environment. Request the active API
-version, then page through boards with `id`, `name`, `type`, and `state`. Send
-the discovered API version header. Reuse a small provider-specific coordinator
-with conservative concurrency and 429 retry-until-success behavior.
+Run Task 7's incremental organization refresh first, then read its sanitized
+blueprints. Walk every module, filter before grouping, sort groups by module
+name/version/signature, and sort locations by scenario ID/module ID/path.
+Return `found: false`, not a guessed schema, when no accessible scenario
+contains a match.
 
-- [ ] **Step 6: Implement audit orchestration**
-
-Resolve the supplied Make scenario by default. When `--scope team` is present,
-page through every scenario in that URL's team. Fetch through the shared
-coordinator, extract all Monday references, and classify them against the live
-Monday board list. Do not silently expand a Monday audit to the organization.
-
-- [ ] **Step 7: Implement local sync plan**
-
-`sync-board-ids` without `--apply` returns a plan. With `--apply`, write only
-local blueprint files and a manifest:
-
-```json
-{
-  "scenarioId": 6648651,
-  "moduleId": 18,
-  "path": "flow[1].branches[0].flow[0].mapper.boardId",
-  "oldId": "5100313109",
-  "newId": "5100794841",
-  "boardName": "לקוחות",
-  "evidence": "unique_active_same_name_same_type"
-}
-```
-
-No push occurs.
-
-- [ ] **Step 8: Register and verify CLI**
-
-Commands:
+- [ ] **Step 6: Implement and register the commands**
 
 ```bash
-make-fixer monday audit-board-ids --from-url <url>
-make-fixer monday audit-board-ids --from-url <url> --scope team
-make-fixer monday sync-board-ids --from-url <url> --scope team
-make-fixer monday sync-board-ids --from-url <url> --scope team --apply
+make-fixer examples --from-url <url> --module <module>
+make-fixer examples --from-url <url> --app <app>
+make-fixer examples --from-url <url> --search <text>
+make-fixer examples --from-url <url> --scenario <id> --module-id <id> --full
+make-fixer connections --from-url <url>
 ```
 
-Run:
+Require exactly one example lookup mode. `connections` always scopes to the
+team in the supplied URL; it does not list or mutate credentials.
+
+- [ ] **Step 7: Verify GREEN**
 
 ```bash
-bun test src/monday/board-reconciliation.test.ts src/commands/monday.test.ts src/cli.test.ts
+bun test src/examples/module-examples.test.ts src/commands/examples.test.ts src/commands/connections.test.ts src/make-api/client.test.ts src/cli.test.ts
+bun src/cli.ts examples --help
+bun src/cli.ts connections --help
+```
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/examples/module-examples.ts src/examples/module-examples.test.ts src/commands/examples.ts src/commands/examples.test.ts src/commands/connections.ts src/commands/connections.test.ts src/make-api/types.ts src/make-api/client.ts src/make-api/client.test.ts src/cli.ts src/cli.test.ts
+git diff --cached --check
+git commit -m "feat: discover reusable Make module examples"
 ```
 
 ---
 
-### Task 11: Update Agent Documentation Without Growing Resident Context
+### Task 11: Add Owned Scenario Creation and Guarded Cleanup
+
+**Files:**
+- Create: `src/probes/ownership-store.ts`
+- Create: `src/probes/ownership-store.test.ts`
+- Create: `src/commands/create.ts`
+- Create: `src/commands/create.test.ts`
+- Create: `src/commands/cleanup.ts`
+- Create: `src/commands/cleanup.test.ts`
+- Modify: `src/commands/run.ts`
+- Modify: `src/commands/run.test.ts`
+- Modify: `src/make-api/types.ts`
+- Modify: `src/make-api/client.ts`
+- Modify: `src/make-api/client.test.ts`
+- Modify: `src/cli.ts`
+- Modify: `src/cli.test.ts`
+
+**Interfaces:**
+- Consumes: blueprint validation, fingerprints, the request coordinator, and
+  team/organization resolution.
+- Produces:
+
+```ts
+export type ProbeLifecycleState =
+  | "created"
+  | "verified"
+  | "active"
+  | "running"
+  | "terminal"
+  | "inactive"
+  | "cleanup_failed"
+  | "deleted";
+
+export interface OwnedScenarioRecord {
+  scenarioId: number;
+  operationId: string;
+  teamId: number;
+  organizationId: number;
+  baseUrl: string;
+  createdAt: string;
+  updatedAt: string;
+  lastVerifiedFingerprint: string;
+  lifecycleState: ProbeLifecycleState;
+  executionId: string | null;
+}
+
+export interface OwnershipStore {
+  put(record: OwnedScenarioRecord): void;
+  get(baseUrl: string, scenarioId: number): OwnedScenarioRecord | null;
+  update(baseUrl: string, scenarioId: number, patch: Partial<OwnedScenarioRecord>): void;
+  listPending(): OwnedScenarioRecord[];
+  markDeleted(baseUrl: string, scenarioId: number): void;
+}
+
+export interface CreateScenarioInput {
+  teamId: number;
+  blueprint: Blueprint;
+  scheduling: { type: "on-demand" };
+  confirmed?: boolean;
+}
+
+export interface ScenarioDetails {
+  id: number;
+  name: string;
+  teamId: number;
+  isActive: boolean;
+  iswaiting?: boolean;
+  scheduling: unknown;
+}
+
+MakeApiClient.prototype.createScenario(input: CreateScenarioInput): Promise<ScenarioDetails>;
+MakeApiClient.prototype.fetchScenarioDetails(scenarioId: number): Promise<ScenarioDetails>;
+MakeApiClient.prototype.startScenario(scenarioId: number): Promise<ScenarioDetails>;
+MakeApiClient.prototype.stopScenario(scenarioId: number): Promise<ScenarioDetails>;
+MakeApiClient.prototype.deleteScenario(scenarioId: number): Promise<number>;
+```
+
+- [ ] **Step 1: Write failing ownership-store tests**
+
+Use a temporary SQLite file. Assert WAL mode, insert/update/read, unique
+`baseUrl + scenarioId`, pending cleanup ordering, lifecycle transitions, and
+that a record marked `deleted` is absent from pending cleanup.
+
+- [ ] **Step 2: Write failing create contract tests**
+
+Assert preview mode performs no POST. With `--yes`, assert:
+
+```json
+{
+  "blueprint": "<JSON string>",
+  "teamId": 2186253,
+  "scheduling": "{\"type\":\"on-demand\"}"
+}
+```
+
+is sent to `POST /api/v2/scenarios`, the default name begins
+`[make-fixer probe]`, contains a generated UUID operation marker, the response
+is fetched back, and the last verified fingerprint is recorded. Assert
+`--no-probe-label` removes only the human-readable prefix while retaining the
+operation marker needed for reconciliation.
+
+- [ ] **Step 3: Write failing guarded-cleanup tests**
+
+Cover missing ownership, mismatched team/zone, active remote scenario, drifted
+remote fingerprint, read-only cleanup status, missing `--yes`, successful
+delete, and delete response reconciliation after a network timeout. No blocked
+case sends DELETE.
+
+Assert `create` and `run` results include
+`meta.pendingCleanup = ownership.listPending()` without mutating any pending
+scenario.
+
+- [ ] **Step 4: Verify RED**
+
+```bash
+bun test src/probes/ownership-store.test.ts src/commands/create.test.ts src/commands/cleanup.test.ts src/make-api/client.test.ts
+```
+
+- [ ] **Step 5: Implement the SQLite ownership store**
+
+Store records in the shared global-state SQLite database but a separate
+`owned_scenarios` table. Use short transactions. Never store blueprint content,
+inputs, outputs, or credentials.
+
+- [ ] **Step 6: Implement scenario lifecycle API methods**
+
+Use documented endpoints:
+
+```bash
+POST   /api/v2/scenarios
+POST   /api/v2/scenarios/{scenarioId}/start
+POST   /api/v2/scenarios/{scenarioId}/stop
+DELETE /api/v2/scenarios/{scenarioId}
+```
+
+Before POST, generate one `operationId` with `crypto.randomUUID()` and set the
+blueprint name to `[make-fixer probe] <requested-name> [<operationId>]`, or
+`<requested-name> [<operationId>]` with `--no-probe-label`. Creation is
+reconciled after ambiguous transport failure by listing scenarios in the target
+team and matching that exact operation marker. More than one match is an
+explicit `AMBIGUOUS_CREATE` failure. Deletion is reconciled with a scenario GET:
+404 means the owned delete completed.
+
+- [ ] **Step 7: Implement and register `create` and `cleanup`**
+
+`create` validates the blueprint, forces on-demand scheduling, previews unless
+`--yes`, verifies remote state, and records ownership. `cleanup` defaults to
+status-only. Deletion requires `--delete --yes`, inactive state, exact ownership,
+and the current remote fingerprint matching `lastVerifiedFingerprint`. Add
+pending owned records to new mutation-command metadata so an interrupted agent
+can ask the user about them later.
+
+- [ ] **Step 8: Verify GREEN**
+
+```bash
+bun test src/probes/ownership-store.test.ts src/commands/create.test.ts src/commands/cleanup.test.ts src/make-api/client.test.ts src/cli.test.ts
+bun src/cli.ts create --help
+bun src/cli.ts cleanup --help
+```
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/probes/ownership-store.ts src/probes/ownership-store.test.ts src/commands/create.ts src/commands/create.test.ts src/commands/cleanup.ts src/commands/cleanup.test.ts src/commands/run.ts src/commands/run.test.ts src/make-api/types.ts src/make-api/client.ts src/make-api/client.test.ts src/cli.ts src/cli.test.ts
+git diff --cached --check
+git commit -m "feat: add owned scenario lifecycle"
+```
+
+---
+
+### Task 12: Add Generic Probe Orchestration
+
+**Files:**
+- Create: `src/probes/probe-runner.ts`
+- Create: `src/probes/probe-runner.test.ts`
+- Create: `src/commands/probe.ts`
+- Create: `src/commands/probe.test.ts`
+- Modify: `src/make-api/types.ts`
+- Modify: `src/make-api/client.ts`
+- Modify: `src/make-api/client.test.ts`
+- Modify: `src/cli.ts`
+- Modify: `src/cli.test.ts`
+
+**Interfaces:**
+- Consumes: `createScenario`, `runScenario`, execution polling, the ownership
+  store, fingerprints, canonical traversal, and stable output envelopes.
+- Produces:
+
+```ts
+export interface ProbeRequest {
+  teamId: number;
+  organizationId: number;
+  baseUrl: string;
+  blueprint: Blueprint;
+  name: string;
+  data?: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
+export interface ProbeResult {
+  scenarioId: number;
+  executionId: string | null;
+  executionStatus: "SUCCESS" | "WARNING" | "ERROR" | "CANCELLED" | "UNKNOWN";
+  outputs: Record<string, unknown> | null;
+  executionError: unknown | null;
+  postRunInterfaces: Array<{ moduleId: number; path: string; interface: unknown }>;
+  moduleLogs: Array<{ moduleId: number; status: number; bundles: number }>;
+  scenarioActive: boolean | null;
+  cleanupRequired: true;
+  cleanupOptions: ["keep", "delete", "revise_and_rerun"];
+  userDecisionRequired: true;
+}
+
+export interface ProbeDependencies {
+  client: Pick<
+    MakeApiClient,
+    | "createScenario"
+    | "fetchScenarioDetails"
+    | "fetchBlueprint"
+    | "fetchScenarioInterface"
+    | "startScenario"
+    | "runScenario"
+    | "fetchExecutionDetails"
+    | "stopScenarioExecution"
+    | "listModuleLogs"
+    | "stopScenario"
+  >;
+  ownership: OwnershipStore;
+  fingerprint: typeof fingerprintBlueprint;
+}
+
+export interface ModuleLogSummary {
+  moduleId: number;
+  executionId: string;
+  status: number;
+  bundles: number;
+}
+
+MakeApiClient.prototype.stopScenarioExecution(
+  scenarioId: number,
+  executionId: string,
+  force?: boolean,
+): Promise<void>;
+MakeApiClient.prototype.listModuleLogs(
+  scenarioId: number,
+  moduleId: number,
+): Promise<ModuleLogSummary[]>;
+
+export async function runOwnedProbe(
+  deps: ProbeDependencies,
+  request: ProbeRequest,
+): Promise<ProbeResult>;
+```
+
+- [ ] **Step 1: Write the failing successful-lifecycle test**
+
+With a fake client, assert this exact order:
+
+```text
+create -> fetch blueprint -> fetch interface -> record verified
+-> start -> record active -> run once -> record execution ID
+-> poll RUNNING -> poll SUCCESS -> fetch blueprint -> fetch module logs
+-> stop scenario -> verify inactive -> refresh fingerprint -> record inactive
+```
+
+Assert outputs, post-run module interfaces, module-log counts, and all three
+cleanup options are returned. Assert DELETE is never called.
+
+- [ ] **Step 2: Write failing compensation and cancellation tests**
+
+Cover:
+
+- create failure: no ownership record and no compensation;
+- remote verification failure: scenario remains owned/inactive and cleanup is
+  required;
+- activation failure: no run POST, then verify inactive;
+- run failure before execution ID: deactivate the owned scenario;
+- terminal execution error: return its error, then deactivate;
+- cancellation while running: stop that exact execution, then deactivate;
+- stop-execution or deactivation failure: exit code 5, state
+  `cleanup_failed`, exact unresolved state returned;
+- no path mutates a pre-existing scenario ID.
+
+- [ ] **Step 3: Write failing API contract tests**
+
+Assert:
+
+```text
+POST /api/v2/scenarios/{scenarioId}/executions/{executionId}/stop
+GET  /api/v2/scenarios/{scenarioId}/modules/{moduleId}/logs
+```
+
+use encoded IDs, the shared coordinator, and sanitized errors. The run POST is
+sent exactly once and remains organization-rate-exempt.
+
+- [ ] **Step 4: Verify RED**
+
+```bash
+bun test src/probes/probe-runner.test.ts src/commands/probe.test.ts src/make-api/client.test.ts
+```
+
+- [ ] **Step 5: Implement the probe state machine**
+
+Use one `try/catch/finally` orchestration boundary and persist every confirmed
+lifecycle transition before the next remote mutation. Poll until terminal or
+abort. On abort, stop only the recorded execution. Deactivate only the owned
+scenario. Refetch after the run and collect every module's populated
+`metadata.interface` through canonical traversal.
+
+- [ ] **Step 6: Implement output truthfulness**
+
+Return `execution.outputs` as actual payload only when provided by the
+documented execution endpoint. Return post-run interface metadata separately.
+Module logs report only status/bundle counts. Never label either one as
+intermediate bundle contents.
+
+- [ ] **Step 7: Register `probe`**
+
+Flags: `--from-url`, `--blueprint`, `--name`, `--data`, `--data-file`,
+`--timeout`, `--yes`, `--human`. Preview performs validation and connection
+reference checks but no mutation. A completed mutation always returns
+`userDecisionRequired: true`; its metadata includes every other pending owned
+scenario without modifying them.
+
+- [ ] **Step 8: Verify GREEN**
+
+```bash
+bun test src/probes/probe-runner.test.ts src/commands/probe.test.ts src/make-api/client.test.ts src/cli.test.ts
+bun src/cli.ts probe --help
+```
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/probes/probe-runner.ts src/probes/probe-runner.test.ts src/commands/probe.ts src/commands/probe.test.ts src/make-api/types.ts src/make-api/client.ts src/make-api/client.test.ts src/cli.ts src/cli.test.ts
+git diff --cached --check
+git commit -m "feat: add generic Make scenario probes"
+```
+
+---
+
+### Task 13: Update Agent Documentation Without Growing Resident Context
 
 **Files:**
 - Modify: `README.md`
 - Modify: `skills/make-fixer/SKILL.md`
-- Modify: `.agents/skills/make-fixer/SKILL.md` only if it is the repository-owned active mirror and not generated.
 
 **Interfaces:**
 - Consumes: final command help and stable output contracts.
-- Produces: concise routing guidance for AI agents.
+- Produces: concise routing and cleanup guidance for AI agents.
 
 - [ ] **Step 1: Add README command examples**
 
-Document exact examples for `inspect`, `search`, `run`, `doctor`, semantic
-validation, and Monday audit/sync. State that search defaults organization-wide
-and that sync does not push.
+Document exact examples for `inspect`, `search`, `examples`, `connections`,
+`create`, `run`, `probe`, `cleanup`, `doctor`, and semantic validation. State
+that search/examples default organization-wide, probes retain scenarios, and
+only the user decides whether to keep, delete, or revise them.
 
 - [ ] **Step 2: Replace ad hoc parsing guidance in the skill**
 
-Add routing rules:
+Add:
 
 ```markdown
 - Exact module question -> `make-fixer inspect --module`.
 - Find an ID, URL, prompt, field, or module across Make -> `make-fixer search`.
-- Diagnose capability/auth/plan behavior -> `make-fixer doctor`.
-- Run on-demand scenario -> `make-fixer run`; never resend after timeout.
-- Monday board migration -> audit first, sync locally second, validate third, push only after approval.
+- Learn a real module configuration -> `make-fixer examples`.
+- Discover an existing connection -> `make-fixer connections`.
+- Learn a provider response -> create an explicit-output blueprint and use `make-fixer probe`.
+- After every probe -> report results and ask the user to keep, delete, or revise and rerun.
+- Never treat module logs or post-run interfaces as intermediate output bundles.
 ```
 
-Remove instructions that tell agents to manually recurse through blueprint JSON
-when a new command now handles it. Keep deep reference files load-on-demand.
+Remove provider-specific recovery instructions and manual recursive blueprint
+parsing where the new commands now apply.
 
-- [ ] **Step 3: Correct the debugging contract**
-
-State that a provider error such as `board_id:null` must be checked against the
-live dependency before suggesting stale execution or runtime mapping theories.
-
-- [ ] **Step 4: Verify examples against help**
-
-Run:
+- [ ] **Step 3: Verify documentation against help**
 
 ```bash
 bun src/cli.ts inspect --help
 bun src/cli.ts search --help
+bun src/cli.ts examples --help
+bun src/cli.ts connections --help
+bun src/cli.ts create --help
 bun src/cli.ts run --help
+bun src/cli.ts probe --help
+bun src/cli.ts cleanup --help
 bun src/cli.ts doctor --help
-bun src/cli.ts monday --help
 ```
 
-Expected: every documented flag exists exactly as written.
+Expected: every documented command and flag exists exactly as written.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add README.md skills/make-fixer/SKILL.md
+git diff --cached --check
+git commit -m "docs: teach agents the probe workflow"
+```
 
 ---
 
-### Task 12: Full Verification and Safe Live API Evidence
+### Task 14: Full Verification and Safe Live API Evidence
 
 **Files:**
 - Modify only if failures require fixes in owned files.
@@ -1098,7 +1592,8 @@ Expected: every documented flag exists exactly as written.
 
 **Interfaces:**
 - Consumes: all implemented commands.
-- Produces: fresh local verification and read-only real API evidence.
+- Produces: complete automated evidence plus real read-only and approved probe
+  evidence.
 
 - [ ] **Step 1: Run complete automated verification**
 
@@ -1110,51 +1605,59 @@ git diff --check
 
 Expected: zero test failures, zero type errors, zero whitespace errors.
 
-- [ ] **Step 2: Verify the original branch regression locally**
+- [ ] **Step 2: Verify the original branch regression**
 
 ```bash
 bun test src/commands/inspect.test.ts
 ```
 
-Expected: the fixture-backed test proves module 18 is found inside `branches`,
-and the next ID exceeds every module/error-handler ID.
+Expected: module 18 is found inside `branches`, and next ID exceeds every
+module/error-handler ID.
 
-- [ ] **Step 3: Run read-only `doctor` against the supplied real scenario**
+- [ ] **Step 3: Run safe real read-only commands**
 
 ```bash
 bun src/cli.ts doctor --from-url "https://eu1.make.com/2186253/scenarios/6648651/edit"
+bun src/cli.ts search --from-url "https://eu1.make.com/2186253/scenarios/6648651/edit" --query "boardId" --fresh
+bun src/cli.ts examples --from-url "https://eu1.make.com/2186253/scenarios/6648651/edit" --search "boardId"
+bun src/cli.ts connections --from-url "https://eu1.make.com/2186253/scenarios/6648651/edit"
 ```
 
-Expected evidence for the current account: organization resolution succeeds,
-`license.apiLimit` is reported, and no token value appears.
+Expected: organization coverage and exact paths are explicit, connections omit
+credentials, limit metadata reports the discovered API limit and 95% effective
+rate, and no secret values appear.
 
-- [ ] **Step 4: Run read-only organization search**
+- [ ] **Step 4: Prepare a harmless explicit-output probe**
+
+Use `examples` to locate the organization's real Scenarios `Return output`
+module shape. Build a minimal local blueprint containing only built-in
+data-construction modules plus that output module; use no external connection
+and no write-capable provider module. Validate it locally and retain the exact
+fixture in `tests/fixtures/probe-blueprint.json`.
+
+- [ ] **Step 5: Run one approved live probe**
+
+The user approved scenario creation/testing in this thread. Target only team
+`2186253` from the supplied scenario URL:
 
 ```bash
-bun src/cli.ts search --from-url "https://eu1.make.com/2186253/scenarios/6648651/edit" --field boardId --value 5100794841 --fresh
+bun src/cli.ts probe --from-url "https://eu1.make.com/2186253/scenarios/6648651/edit" --blueprint tests/fixtures/probe-blueprint.json --name "Make Fixer verification" --yes
 ```
 
-Expected: organization-wide coverage metadata, exact scenario/module paths,
-rate statistics, and no sensitive values. If some scenarios are inaccessible,
-the result must say `incomplete: true`.
+Expected: one labeled scenario is created, verified, activated, run once,
+returns a configured output and post-run interface evidence, is deactivated,
+and remains present with `userDecisionRequired: true`. Do not delete it without
+the user's cleanup decision.
 
-- [ ] **Step 5: Run read-only Monday audit**
-
-Only if the current project contains `MONDAY_TOKEN` and the user has authorized
-this real account:
+- [ ] **Step 6: Verify retained probe state**
 
 ```bash
-bun src/cli.ts monday audit-board-ids --from-url "https://eu1.make.com/2186253/scenarios/6648651/edit"
+bun src/cli.ts cleanup -s <created-scenario-url>
 ```
 
-Expected: no Make or Monday writes; every reference has an explicit status and
-evidence.
-
-- [ ] **Step 6: Do not run a live scenario or push**
-
-`make-fixer run --yes`, `make-fixer push`, and Monday `--apply` are not part of
-read-only final verification. They require a separate known-safe target and
-explicit approval.
+Expected: ownership and fingerprint match, the scenario is inactive, and the
+three options `keep`, `delete`, and `revise_and_rerun` are returned without
+mutation.
 
 - [ ] **Step 7: Review the final diff against scope**
 
@@ -1166,8 +1669,19 @@ git diff --check HEAD
 
 Confirm no unrelated dirty file was reverted, staged, or absorbed.
 
-- [ ] **Step 8: Record final evidence**
+- [ ] **Step 8: Record evidence and ask the cleanup question**
 
 Append exact command results, test counts, live endpoint statuses, rate-limit
-metadata, and any unavailable capability to the baseline evidence document.
-Do not record organization lists, customer data, tokens, or full blueprints.
+metadata, created scenario ID/URL, terminal execution status, configured output
+shape, inactive-state proof, and any unavailable capability to the baseline
+evidence document. Do not record organization lists, customer data, tokens, or
+full blueprints. Report the result to the user and ask whether to keep, delete,
+or revise and rerun the retained scenario.
+
+- [ ] **Step 9: Commit final fixture and evidence**
+
+```bash
+git add tests/fixtures/probe-blueprint.json docs/superpowers/plans/2026-07-23-agent-first-cli-baseline.md
+git diff --cached --check
+git commit -m "test: verify agent-first Make workflows"
+```
