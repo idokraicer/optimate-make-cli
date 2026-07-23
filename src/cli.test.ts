@@ -83,6 +83,29 @@ function expectInspectFailure(result: { stdout: string; stderr: string; code: nu
 }
 
 describe("CLI commands", () => {
+  test("CLI exposes generic owned probe orchestration", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "probe", "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        MAKE_FIXER_NO_UPDATE: "1",
+        MAKE_FIXER_RATE_DB: ":memory:",
+      },
+    });
+    const [stdout, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    expect(code).toBe(0);
+    expect(stdout).toContain("owned on-demand probe scenario");
+    expect(stdout).toContain("--from-url");
+    expect(stdout).toContain("--blueprint");
+    expect(stdout).toContain("--data-file");
+    expect(stdout).toContain("--timeout");
+    expect(stdout).toContain("--yes");
+  });
+
   test("CLI exposes owned scenario creation and guarded cleanup", async () => {
     const create = Bun.spawn(["bun", "src/cli.ts", "create", "--help"], {
       stdout: "pipe",

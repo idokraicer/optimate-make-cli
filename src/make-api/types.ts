@@ -108,6 +108,13 @@ export interface ScenarioDetails {
   scheduling: unknown;
 }
 
+export interface ModuleLogSummary {
+  moduleId: number;
+  executionId: string;
+  status: number;
+  bundles: number;
+}
+
 // --- Note types ---
 
 export interface Note {

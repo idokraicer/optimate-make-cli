@@ -312,6 +312,66 @@ describe("MakeApiClient", () => {
     expect(JSON.parse(String(requests[1].init.body))).toEqual({ data: {}, responsive: true });
   });
 
+  test("stops an exact execution and lists sanitized module log summaries", async () => {
+    const requests: Array<{ url: string; init: RequestInit; context: RequestContext }> = [];
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async (url, init, context) => {
+          requests.push({ url: String(url), init, context });
+          if (init.method === "POST") return new Response(null, { status: 204 });
+          return Response.json({
+            logs: [{
+              moduleId: 3,
+              executionId: "execution/id",
+              status: 1,
+              bundles: 4,
+              data: { secret: "must not escape" },
+            }],
+          });
+        },
+      },
+    });
+
+    await client.stopScenarioExecution(7, "execution/id", true);
+    expect(await client.listModuleLogs(7, 3)).toEqual([{
+      moduleId: 3,
+      executionId: "execution/id",
+      status: 1,
+      bundles: 4,
+    }]);
+    expect(requests.map(({ url }) => url)).toEqual([
+      "https://eu1.make.com/api/v2/scenarios/7/executions/execution%2Fid/stop",
+      "https://eu1.make.com/api/v2/scenarios/7/modules/3/logs",
+    ]);
+    expect(requests[0].init.method).toBe("POST");
+    expect(JSON.parse(String(requests[0].init.body))).toEqual({ force: true });
+    expect(requests.map(({ context }) => context.organizationRateExempt))
+      .toEqual([undefined, undefined]);
+    expect(requests[0].context.retryTransientResponses).toBe(false);
+    expect(requests[0].context.networkRetrySafe).toBe(false);
+  });
+
+  test("sanitizes execution-stop and module-log API errors", async () => {
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async () => new Response(
+          "Authorization: Bearer provider-secret",
+          { status: 500 },
+        ),
+      },
+    });
+    await expect(client.stopScenarioExecution(7, "e1")).rejects.toThrow(
+      "Make API stop execution error 500.",
+    );
+    await expect(client.listModuleLogs(7, 3)).rejects.toThrow(
+      "Make API list module logs error 500.",
+    );
+  });
+
   test("preserves an execution ID assigned in an unsuccessful run response", async () => {
     const client = new MakeApiClient({
       token: "test-token",

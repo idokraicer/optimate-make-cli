@@ -137,6 +137,7 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
         const initialStatus = String(initial.status ?? "").toUpperCase();
         if (opts.wait && !["SUCCESS", "WARNING", "ERROR"].includes(initialStatus)) {
           const remainingMs = waitDeadline - Date.now();
+          const pollingClient = client;
           result = remainingMs <= 0
             ? {
                 status: "RUNNING",
@@ -149,7 +150,7 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
                 timeoutMs: remainingMs,
                 signal: controller.signal,
                 fetchExecutionDetails: (scenarioId, id, signal) =>
-                  client.fetchExecutionDetails(scenarioId, id, signal),
+                  pollingClient.fetchExecutionDetails(scenarioId, id, signal),
               });
         }
         if ("code" in result && result.code === "RUN_STILL_RUNNING") {

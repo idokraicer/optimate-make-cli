@@ -9,6 +9,7 @@ import {
   type ConnectionSummary,
   type CreateScenarioInput,
   type ScenarioDetails,
+  type ModuleLogSummary,
 } from "./types";
 import { BUILTIN_MODULES } from "../data/builtin-modules";
 import {
@@ -798,6 +799,62 @@ export class MakeApiClient {
       ...(isObject(source.outputs) ? { outputs: source.outputs } : {}),
       ...(source.error !== undefined ? { error: source.error } : {}),
     };
+  }
+
+  async stopScenarioExecution(
+    scenarioId: number,
+    executionId: string,
+    force = false,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const res = await this.request(
+      `${this.baseUrl}/api/v2/scenarios/${encodeURIComponent(String(scenarioId))}`
+        + `/executions/${encodeURIComponent(executionId)}/stop`,
+      { method: "POST", body: JSON.stringify({ force }) },
+      {
+        retryTransientResponses: false,
+        networkRetrySafe: false,
+        signal,
+      },
+    );
+    if (!res.ok) throw new Error(`Make API stop execution error ${res.status}.`);
+  }
+
+  async listModuleLogs(
+    scenarioId: number,
+    moduleId: number,
+    signal?: AbortSignal,
+  ): Promise<ModuleLogSummary[]> {
+    const res = await this.request(
+      `${this.baseUrl}/api/v2/scenarios/${encodeURIComponent(String(scenarioId))}`
+        + `/modules/${encodeURIComponent(String(moduleId))}/logs`,
+      {},
+      { signal },
+    );
+    if (!res.ok) throw new Error(`Make API list module logs error ${res.status}.`);
+    const data = await readJsonSafely(res);
+    const source = responsePayload(data);
+    const logs = Array.isArray(source)
+      ? source
+      : Array.isArray(source?.logs) ? source.logs
+      : Array.isArray(source?.moduleLogs) ? source.moduleLogs
+      : [];
+    return logs.flatMap((entry: unknown): ModuleLogSummary[] => {
+      if (!isObject(entry)) return [];
+      const normalized = {
+        moduleId: Number(entry.moduleId ?? entry.module_id ?? moduleId),
+        executionId: String(entry.executionId ?? entry.execution_id ?? entry.imtId ?? ""),
+        status: Number(entry.status),
+        bundles: Number(entry.bundles ?? entry.bundleCount ?? entry.bundle_count ?? 0),
+      };
+      return Number.isInteger(normalized.moduleId)
+          && normalized.moduleId > 0
+          && normalized.executionId.length > 0
+          && Number.isFinite(normalized.status)
+          && Number.isFinite(normalized.bundles)
+        ? [normalized]
+        : [];
+    });
   }
 
   async listExecutions(scenarioId: number, opts?: {
