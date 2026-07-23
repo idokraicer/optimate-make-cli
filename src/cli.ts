@@ -162,7 +162,6 @@ registerRunCommand(program, {
 
 registerDoctorCommand(program, {
   createClient: createClientOrThrow,
-  resolveScenarioClient: resolveClientOrThrow,
   parseMakeUrl,
   parseScenarioInput: parseInspectScenarioInput,
   configuredBaseUrl: async () => (await resolveCredentialsOrThrow()).preferred,

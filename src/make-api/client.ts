@@ -198,6 +198,40 @@ export class MakeApiClient {
     };
   }
 
+  /**
+   * Read a Make API endpoint while preserving its real HTTP response for
+   * diagnostics. Only relative v2 API paths are accepted, so this cannot be
+   * turned into an arbitrary authenticated request.
+   */
+  async diagnosticGet(
+    path: string,
+    organizationId: number | "unknown" = this.organizationId,
+  ): Promise<Response> {
+    if (!path.startsWith("/api/v2/") || path.includes("://")) {
+      throw new Error("diagnosticGet requires a relative Make API path under /api/v2/.");
+    }
+    const response = await this.request(
+      `${this.baseUrl}${path}`,
+      { method: "GET" },
+      { organizationId },
+    );
+
+    const organizationMatch = path.match(/^\/api\/v2\/organizations\/(\d+)$/);
+    if (response.ok && organizationMatch) {
+      try {
+        const data = await response.clone().json();
+        this.observeOrganizationDetails(
+          Number(organizationMatch[1]),
+          data.organization ?? data,
+        );
+      } catch {
+        // The response remains authoritative evidence even if its optional
+        // rate-limit payload cannot be decoded.
+      }
+    }
+    return response;
+  }
+
   async fetchTeam(teamId: number): Promise<TeamDetails> {
     const res = await this.request(
       `${this.baseUrl}/api/v2/teams/${teamId}`,
@@ -223,16 +257,23 @@ export class MakeApiClient {
     }
     const data = await res.json();
     const organization = data.organization ?? data;
+    this.observeOrganizationDetails(organizationId, organization);
+    return organization as OrganizationDetails;
+  }
+
+  private observeOrganizationDetails(
+    organizationId: number,
+    organization: any,
+  ): void {
+    this.useOrganization(organizationId);
     this.organizationDetailsLoaded = true;
     const apiLimit = Number(organization?.license?.apiLimit);
-    if (Number.isFinite(apiLimit) && apiLimit > 0) {
-      this.documentedRpm = Math.floor(apiLimit);
-      this.coordinator?.setOrganizationLimit?.(
-        this.rateBucket(organizationId),
-        this.documentedRpm,
-      );
-    }
-    return organization as OrganizationDetails;
+    if (!Number.isFinite(apiLimit) || apiLimit <= 0) return;
+    this.documentedRpm = Math.floor(apiLimit);
+    this.coordinator?.setOrganizationLimit?.(
+      this.rateBucket(organizationId),
+      this.documentedRpm,
+    );
   }
 
   async discoverOrganization(organizationId: number): Promise<boolean> {

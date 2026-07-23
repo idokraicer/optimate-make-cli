@@ -26,6 +26,74 @@ function immediateLimiter(): RateLimiterStore {
 }
 
 describe("MakeApiClient", () => {
+  test("diagnostic GET preserves response metadata and updates the observed organization limit", async () => {
+    const requests: Array<{ method: string; path: string; organizationId: number | "unknown" }> = [];
+    const client = new MakeApiClient({
+      token: "token",
+      baseUrl: "https://eu2.make.com",
+      coordinator: {
+        request: async (input, init, context) => {
+          const request = new Request(input, init);
+          requests.push({
+            method: request.method,
+            path: new URL(request.url).pathname,
+            organizationId: context.bucket.organizationId,
+          });
+          return new Response(JSON.stringify({
+            organization: { id: 12, license: { apiLimit: 120 } },
+          }), {
+            status: 206,
+            headers: { "content-type": "application/json", "x-provider-code": "PARTIAL" },
+          });
+        },
+        getRateLimitSnapshot: () => ({
+          documentedRpm: null,
+          effectiveRpm: 30,
+          limitSource: "fallback",
+          requestsSent: 1,
+          retries: 0,
+          cooldownMs: 0,
+        }),
+        setOrganizationLimit: (_bucket, documentedRpm) => {
+          expect(documentedRpm).toBe(120);
+        },
+      },
+    });
+
+    const response = await client.diagnosticGet("/api/v2/organizations/12", 12);
+
+    expect(response.status).toBe(206);
+    expect(response.headers.get("x-provider-code")).toBe("PARTIAL");
+    expect(await response.json()).toMatchObject({
+      organization: { id: 12, license: { apiLimit: 120 } },
+    });
+    expect(requests).toEqual([{
+      method: "GET",
+      path: "/api/v2/organizations/12",
+      organizationId: 12,
+    }]);
+  });
+
+  test("diagnostic GET rejects non-API and absolute paths before sending", async () => {
+    let requests = 0;
+    const client = new MakeApiClient({
+      token: "token",
+      baseUrl: "https://eu2.make.com",
+      coordinator: {
+        request: async () => {
+          requests++;
+          return Response.json({});
+        },
+      },
+    });
+
+    await expect(client.diagnosticGet("https://attacker.test/api/v2/organizations"))
+      .rejects.toThrow("relative Make API path");
+    await expect(client.diagnosticGet("/organizations"))
+      .rejects.toThrow("relative Make API path");
+    expect(requests).toBe(0);
+  });
+
   test("uses documented interface, run, and execution endpoints with only run rate-exempt", async () => {
     const requests: Array<{ url: string; init: RequestInit; context: RequestContext }> = [];
     const client = new MakeApiClient({
