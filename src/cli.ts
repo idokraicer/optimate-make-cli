@@ -10,6 +10,7 @@ import { filterDataFlow } from "./analyzer/checks/data-flow";
 import { applyFixes } from "./fixer/index";
 import { formatReport, formatJson } from "./reporter/index";
 import { diffBlueprints } from "./agent/blueprint-editor";
+import { registerInspectCommand } from "./commands/inspect";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
@@ -132,6 +133,13 @@ program
     console.log("");
     printBlueprintSummary(blueprint);
   });
+
+registerInspectCommand(program, {
+  resolveClient,
+  parseScenarioInput,
+  readLocalBlueprint,
+  cliVersion: pkg.version,
+});
 
 // --- analyze command ---
 program
