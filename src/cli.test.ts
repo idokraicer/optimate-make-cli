@@ -83,6 +83,21 @@ function expectInspectFailure(result: { stdout: string; stderr: string; code: nu
 }
 
 describe("CLI commands", () => {
+  test("CLI exposes safe scenario run controls", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "run", "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, MAKE_FIXER_NO_UPDATE: "1" },
+    });
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).toContain("--scenario");
+    expect(stdout).toContain("--data");
+    expect(stdout).toContain("--data-file");
+    expect(stdout).toContain("--wait");
+    expect(stdout).toContain("--timeout");
+    expect(stdout).toContain("--yes");
+    expect(stdout).toContain("--human");
+  });
   test("CLI has organization search command with agent-safe controls", async () => {
     const proc = Bun.spawn(["bun", "src/cli.ts", "search", "--help"], {
       stdout: "pipe",

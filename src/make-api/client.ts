@@ -20,6 +20,10 @@ import {
   type RateLimitSnapshot,
 } from "./rate-limiter";
 import type { ApiErrorCode } from "./api-error";
+import type {
+  ExecutionDetails,
+  ScenarioInterface,
+} from "./scenario-runner";
 
 export interface MakeApiConfig {
   token: string;
@@ -506,6 +510,72 @@ export class MakeApiClient {
     return data.scenario ?? data;
   }
 
+  async fetchScenarioInterface(scenarioId: number): Promise<ScenarioInterface> {
+    const res = await this.request(
+      `${this.baseUrl}/api/v2/scenarios/${scenarioId}/interface`,
+    );
+    if (!res.ok) {
+      throw new Error(`Make API fetch scenario interface error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return (
+      data.interface
+      ?? data.scenarioInterface
+      ?? data.response?.interface
+      ?? data.response?.scenarioInterface
+      ?? data.response
+      ?? data
+    ) as ScenarioInterface;
+  }
+
+  async runScenario(
+    scenarioId: number,
+    body: { data?: object; responsive: boolean },
+  ): Promise<{ executionId: string; status?: string; outputs?: object }> {
+    const res = await this.request(
+      `${this.baseUrl}/api/v2/scenarios/${scenarioId}/run`,
+      { method: "POST", body: JSON.stringify(body) },
+      { organizationRateExempt: true },
+    );
+    const data = await readJsonSafely(res);
+    const executionId = extractExecutionId(data);
+    if (!res.ok) {
+      throw new ScenarioRunRequestError(
+        `Make API run scenario error ${res.status}`,
+        executionId,
+        res.status,
+      );
+    }
+    if (!executionId) {
+      throw new Error("Make API run scenario response did not include an execution ID.");
+    }
+    const source = responsePayload(data);
+    return {
+      executionId,
+      ...(typeof source?.status === "string" ? { status: source.status } : {}),
+      ...(isObject(source?.outputs) ? { outputs: source.outputs } : {}),
+    };
+  }
+
+  async fetchExecutionDetails(
+    scenarioId: number,
+    executionId: string,
+  ): Promise<ExecutionDetails> {
+    const res = await this.request(
+      `${this.baseUrl}/api/v2/scenarios/${scenarioId}/executions/${encodeURIComponent(executionId)}`,
+    );
+    if (!res.ok) {
+      throw new Error(`Make API fetch execution details error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    const source = responsePayload(data);
+    return {
+      status: normalizeExecutionStatus(source.status),
+      ...(isObject(source.outputs) ? { outputs: source.outputs } : {}),
+      ...(source.error !== undefined ? { error: source.error } : {}),
+    };
+  }
+
   async listExecutions(scenarioId: number, opts?: {
     from?: string;
     to?: string;
@@ -586,6 +656,47 @@ export class MakeApiClient {
       );
     });
   }
+}
+
+export class ScenarioRunRequestError extends Error {
+  constructor(
+    message: string,
+    readonly executionId: string | null,
+    readonly httpStatus: number | null,
+  ) {
+    super(message);
+    this.name = "ScenarioRunRequestError";
+  }
+}
+
+async function readJsonSafely(response: Response): Promise<any> {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
+function extractExecutionId(data: any): string | null {
+  const source = responsePayload(data);
+  const value = source?.executionId ?? source?.id ?? source?.execution?.id ?? source?.execution;
+  return typeof value === "string" || typeof value === "number" ? String(value) : null;
+}
+
+function isObject(value: unknown): value is Record<string, any> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function responsePayload(data: any): any {
+  const response = isObject(data?.response) ? data.response : data;
+  return isObject(response?.execution) ? response.execution : response;
+}
+
+function normalizeExecutionStatus(value: unknown): ExecutionDetails["status"] {
+  const status = String(value ?? "RUNNING").toUpperCase();
+  return status === "SUCCESS" || status === "WARNING" || status === "ERROR"
+    ? status
+    : "RUNNING";
 }
 
 function paginationMetadata(data: any): Record<string, unknown> | null {
