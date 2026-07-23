@@ -10,6 +10,8 @@ import { filterDataFlow } from "./analyzer/checks/data-flow";
 import { applyFixes } from "./fixer/index";
 import { formatReport, formatJson } from "./reporter/index";
 import { diffBlueprints } from "./agent/blueprint-editor";
+import { fingerprintBlueprint } from "./utils/blueprint-fingerprint";
+import { semanticDiff, type SemanticDiff } from "./utils/semantic-diff";
 import { InspectInputError, registerInspectCommand } from "./commands/inspect";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
@@ -27,6 +29,7 @@ import { join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 
 const BLUEPRINTS_DIR = "blueprints";
+const BLUEPRINT_SIDECARS_DIR = `${BLUEPRINTS_DIR}/.make-fixer`;
 const GLOBAL_CONFIG_DIR = join(homedir(), ".make-fixer");
 const GLOBAL_ENV_PATH = join(GLOBAL_CONFIG_DIR, ".env");
 const ZONE_CACHE_PATH = join(GLOBAL_CONFIG_DIR, ".zones.json");
@@ -128,6 +131,7 @@ program
     await ensureDir(BLUEPRINTS_DIR);
     const filePath = `${BLUEPRINTS_DIR}/${scenarioId}.json`;
     await Bun.write(filePath, JSON.stringify(blueprint, null, 2));
+    await writeBlueprintSidecar(scenarioId, getClientBaseUrl(client, scenarioId), blueprint);
 
     console.log(`Saved to ${filePath}`);
     console.log("");
@@ -244,6 +248,7 @@ program
   .description("Compare local blueprint file against the remote version")
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .option("--json", "Output as JSON")
+  .option("--changes", "Include semantic leaf-level changes")
   .action(async (opts) => {
     const { scenarioId, teamId, baseUrl } = parseScenarioInput(opts.scenario);
     const client = await resolveClient(scenarioId, baseUrl, teamId);
@@ -253,6 +258,7 @@ program
     const { blueprint: remote } = await client.fetchBlueprint(scenarioId);
 
     const diff = diffBlueprints(remote, local);
+    const semantic = opts.changes ? semanticDiff(remote, local) : undefined;
     const remoteAnalysis = analyze(remote, []);
     const localAnalysis = analyze(local, []);
 
@@ -261,6 +267,7 @@ program
       issuesBefore: remoteAnalysis.issues.length,
       issuesAfter: localAnalysis.issues.length,
       nextId: getMaxModuleId(local.flow) + 1,
+      ...(semantic ?? {}),
     };
 
     if (opts.json) {
@@ -278,6 +285,7 @@ program
     console.log(`  IDs preserved: ${diff.idsPreserved ? "yes" : "NO — some original modules were removed"}`);
     console.log(`  Issues: ${result.issuesBefore} (remote) → ${result.issuesAfter} (local)`);
     console.log(`  Next available ID: ${result.nextId}`);
+    if (semantic) printSemanticChanges(semantic);
     console.log("");
   });
 
@@ -287,15 +295,30 @@ program
   .description("Push a local blueprint file to Make.com")
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .option("--yes", "Skip confirmation prompt")
+  .option("--allow-remote-drift", "Allow a push when the remote blueprint changed after fetch")
   .action(async (opts) => {
     const { scenarioId, teamId, baseUrl } = parseScenarioInput(opts.scenario);
     const client = await resolveClient(scenarioId, baseUrl, teamId);
     const local = await readLocalBlueprint(scenarioId);
+    const remoteDrift = await detectRemoteDrift(
+      scenarioId,
+      getClientBaseUrl(client, scenarioId),
+      client,
+    );
 
-    if (!opts.yes) {
+    if (remoteDrift) {
+      if (!opts.allowRemoteDrift) {
+        console.error(`REMOTE_DRIFT: ${remoteDrift}`);
+        process.exitCode = 4;
+        return;
+      }
+      console.warn(`REMOTE_DRIFT: ${remoteDrift}`);
+    }
+
+    if (!opts.yes || remoteDrift) {
       const modules = walkModules(local.flow);
       console.log(`About to push blueprint "${local.name}" (${modules.length} modules) to scenario ${scenarioId}.`);
-      process.stdout.write("Continue? [y/N] ");
+      process.stdout.write(remoteDrift ? "Continue despite remote drift? [y/N] " : "Continue? [y/N] ");
       const answer = await new Promise<string>((resolve) => {
         process.stdin.once("data", (data) => {
           resolve(data.toString().trim());
@@ -310,6 +333,7 @@ program
 
     console.log("Pushing blueprint...");
     await client.pushBlueprint(scenarioId, local);
+    await writeBlueprintSidecar(scenarioId, getClientBaseUrl(client, scenarioId), local);
     console.log("Done! Blueprint updated successfully.");
   });
 
@@ -1285,6 +1309,80 @@ async function saveZoneCache(cache: Record<string, string>): Promise<void> {
 async function ensureDir(dir: string): Promise<void> {
   const fs = await import("node:fs/promises");
   await fs.mkdir(dir, { recursive: true });
+}
+
+interface BlueprintSidecar {
+  scenarioId: number;
+  baseUrl: string;
+  fingerprint: string;
+  fetchedAt: string;
+}
+
+function blueprintSidecarPath(scenarioId: number): string {
+  return `${BLUEPRINT_SIDECARS_DIR}/${scenarioId}.json`;
+}
+
+function getClientBaseUrl(client: MakeApiClient, scenarioId: number): string {
+  return new URL(client.getBlueprintUrl(scenarioId)).origin;
+}
+
+async function writeBlueprintSidecar(
+  scenarioId: number,
+  baseUrl: string,
+  blueprint: Blueprint,
+): Promise<void> {
+  const sidecar: BlueprintSidecar = {
+    scenarioId,
+    baseUrl,
+    fingerprint: await fingerprintBlueprint(blueprint),
+    fetchedAt: new Date().toISOString(),
+  };
+  await ensureDir(BLUEPRINT_SIDECARS_DIR);
+  await Bun.write(blueprintSidecarPath(scenarioId), JSON.stringify(sidecar, null, 2));
+}
+
+async function readBlueprintSidecar(scenarioId: number): Promise<BlueprintSidecar | null> {
+  const file = Bun.file(blueprintSidecarPath(scenarioId));
+  if (!(await file.exists())) return null;
+  try {
+    const sidecar = await file.json() as Partial<BlueprintSidecar>;
+    if (
+      sidecar.scenarioId !== scenarioId
+      || typeof sidecar.baseUrl !== "string"
+      || typeof sidecar.fingerprint !== "string"
+      || typeof sidecar.fetchedAt !== "string"
+    ) return null;
+    return sidecar as BlueprintSidecar;
+  } catch {
+    return null;
+  }
+}
+
+async function detectRemoteDrift(
+  scenarioId: number,
+  baseUrl: string,
+  client: MakeApiClient,
+): Promise<string | null> {
+  const { blueprint: remote } = await client.fetchBlueprint(scenarioId);
+  const sidecar = await readBlueprintSidecar(scenarioId);
+  if (!sidecar) return "No valid fetch baseline exists; run make-fixer fetch before pushing.";
+  if (sidecar.baseUrl !== baseUrl) return "The fetch baseline belongs to a different Make.com zone.";
+  if (sidecar.fingerprint !== await fingerprintBlueprint(remote)) {
+    return "The remote blueprint changed since the last fetch.";
+  }
+  return null;
+}
+
+function printSemanticChanges(semantic: SemanticDiff): void {
+  const formatModules = (moduleIds: number[]) => moduleIds.length > 0
+    ? moduleIds.map((id) => `#${id}`).join(", ")
+    : "none";
+  console.log(`  Directly modified modules: ${formatModules(semantic.directlyModifiedModules)}`);
+  console.log(`  Ancestor modules: ${formatModules(semantic.ancestorModules)}`);
+  console.log(`  Leaf changes: ${semantic.changes.length}`);
+  for (const change of semantic.changes) {
+    console.log(`    ${change.path}: ${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`);
+  }
 }
 
 async function readLocalBlueprint(scenarioId: number): Promise<Blueprint> {
