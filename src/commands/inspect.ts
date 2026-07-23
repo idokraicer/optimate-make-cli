@@ -1,4 +1,4 @@
-import { Option, type Command } from "commander";
+import type { Command } from "commander";
 import type { MakeApiClient } from "../make-api/client";
 import type { Blueprint, Module } from "../make-api/types";
 import { failureEnvelope, successEnvelope } from "./output";
@@ -55,6 +55,20 @@ export interface InspectSummaryResult {
 
 export type InspectResult = InspectModuleResult | InspectSummaryResult;
 
+export class DuplicateModuleIdsError extends Error {
+  constructor(readonly duplicates: Record<string, string[]>) {
+    super("Blueprint contains duplicate module IDs.");
+    this.name = "DuplicateModuleIdsError";
+  }
+}
+
+export class InspectInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InspectInputError";
+  }
+}
+
 type InspectOptions = {
   moduleId?: number;
   summary?: boolean;
@@ -91,6 +105,9 @@ export function inspectBlueprint(
   scenarioId: number,
   options: InspectOptions,
 ): InspectResult {
+  const duplicates = findDuplicateModuleIds(blueprint);
+  if (Object.keys(duplicates).length > 0) throw new DuplicateModuleIdsError(duplicates);
+
   if (options.moduleId !== undefined) {
     const matches = findWalkedModulesById(blueprint.flow, options.moduleId);
     if (matches.length === 0) {
@@ -138,6 +155,23 @@ export function inspectBlueprint(
       containerCounts,
     },
   };
+}
+
+function findDuplicateModuleIds(blueprint: Blueprint): Record<string, string[]> {
+  const pathsById = new Map<number, string[]>();
+  for (const { module, path } of walkModules(blueprint.flow)) {
+    if (typeof module.id !== "number") continue;
+    const paths = pathsById.get(module.id) ?? [];
+    paths.push(path);
+    pathsById.set(module.id, paths);
+  }
+
+  return Object.fromEntries(
+    [...pathsById.entries()]
+      .filter(([, paths]) => paths.length > 1)
+      .sort(([left], [right]) => left - right)
+      .map(([id, paths]) => [String(id), paths]),
+  );
 }
 
 function toInspectModuleData(entry: WalkedModule): InspectModuleData {
@@ -227,23 +261,22 @@ export function registerInspectCommand(program: Command, dependencies: InspectDe
   program
     .command("inspect")
     .description("Inspect a scenario summary or exact module configuration")
-    .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
-    .addOption(new Option("--module <id>", "Inspect one module by ID").argParser(parseModuleId).conflicts("summary"))
-    .addOption(new Option("--summary", "Inspect every module and safe next ID").conflicts("module"))
+    .option("-s, --scenario [id]", "Make.com scenario ID or URL")
+    .option("--module [id]", "Inspect one module by ID")
+    .option("--summary", "Inspect every module and safe next ID")
     .option("--local", "Read blueprints/<scenarioId>.json instead of fetching")
     .option("--human", "Render a readable summary instead of the default JSON")
     .action(async (opts) => {
-      const { scenarioId, teamId, baseUrl } = dependencies.parseScenarioInput(opts.scenario);
-      const source = opts.local ? "local" as const : "remote" as const;
-
       try {
+        const { scenarioId, teamId, baseUrl } = dependencies.parseScenarioInput(opts.scenario);
+        const moduleId = validateInspectMode(opts);
+        const source = opts.local ? "local" as const : "remote" as const;
         const blueprint = opts.local
           ? await dependencies.readLocalBlueprint(scenarioId)
           : (await (await dependencies.resolveClient(scenarioId, baseUrl, teamId)).fetchBlueprint(scenarioId)).blueprint;
-        const result = inspectBlueprint(blueprint, scenarioId, {
-          ...(opts.module === undefined ? { summary: true as const } : { moduleId: opts.module }),
-          source,
-        });
+        const result = moduleId === undefined
+          ? inspectBlueprint(blueprint, scenarioId, { summary: true, source })
+          : inspectBlueprint(blueprint, scenarioId, { moduleId, source });
 
         if (opts.human) {
           printHumanInspectResult(result);
@@ -257,25 +290,64 @@ export function registerInspectCommand(program: Command, dependencies: InspectDe
           scenarioId,
         }), null, 2));
       } catch (error) {
-        const message = error instanceof Error && error.message.startsWith("Module #")
-          ? error.message
-          : "Unable to inspect scenario.";
-        console.log(JSON.stringify(failureEnvelope("inspect", {
-          code: "INVALID_DATA",
-          message,
-          httpStatus: null,
-          providerCode: null,
-          retryable: false,
-        }), null, 2));
+        const safeError = inspectFailure(error);
+        console.log(JSON.stringify(failureEnvelope("inspect", safeError), null, 2));
         process.exitCode = 1;
       }
     });
 }
 
-function parseModuleId(value: string): number {
-  const id = Number(value);
-  if (!Number.isInteger(id) || id < 0) throw new Error("--module must be a non-negative integer.");
-  return id;
+function validateInspectMode(opts: { module?: unknown; summary?: boolean }): number | undefined {
+  const hasModule = opts.module !== undefined;
+  if (hasModule === Boolean(opts.summary)) {
+    throw new InspectInputError("Choose exactly one of --module or --summary.");
+  }
+  if (!hasModule) return undefined;
+  if (typeof opts.module !== "string") {
+    throw new InspectInputError("--module must be a positive integer.");
+  }
+
+  const moduleId = Number(opts.module);
+  if (!Number.isInteger(moduleId) || moduleId <= 0) {
+    throw new InspectInputError("--module must be a positive integer.");
+  }
+  return moduleId;
+}
+
+function inspectFailure(error: unknown): {
+  code: "INVALID_DATA";
+  message: string;
+  httpStatus: null;
+  providerCode: null;
+  retryable: false;
+  duplicates?: Record<string, string[]>;
+} {
+  if (error instanceof DuplicateModuleIdsError) {
+    return {
+      code: "INVALID_DATA",
+      message: error.message,
+      httpStatus: null,
+      providerCode: null,
+      retryable: false,
+      duplicates: error.duplicates,
+    };
+  }
+  if (error instanceof InspectInputError || (error instanceof Error && error.message.startsWith("Module #"))) {
+    return {
+      code: "INVALID_DATA",
+      message: error.message,
+      httpStatus: null,
+      providerCode: null,
+      retryable: false,
+    };
+  }
+  return {
+    code: "INVALID_DATA",
+    message: "Unable to inspect scenario.",
+    httpStatus: null,
+    providerCode: null,
+    retryable: false,
+  };
 }
 
 function printHumanInspectResult(result: InspectResult): void {

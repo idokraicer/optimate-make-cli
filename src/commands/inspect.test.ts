@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import fixture from "../../tests/fixtures/if-else-blueprint.json";
 import type { Blueprint } from "../make-api/types";
-import { inspectBlueprint } from "./inspect";
+import { DuplicateModuleIdsError, inspectBlueprint } from "./inspect";
 
 function blueprintWithInspectableModule(): Blueprint {
   const blueprint = structuredClone(fixture) as Blueprint;
@@ -58,7 +58,7 @@ describe("inspectBlueprint", () => {
   });
 
   test("summarizes every nested and error-handler module for safe ID allocation", () => {
-    const result = inspectBlueprint(fixture as Blueprint, 6648651, {
+    const result = inspectBlueprint(blueprintWithInspectableModule(), 6648651, {
       summary: true,
       source: "remote",
     });
@@ -69,8 +69,8 @@ describe("inspectBlueprint", () => {
       summary: {
         name: "Nested If/Else error handler",
         moduleCount: 6,
-        maxModuleId: 21,
-        nextModuleId: 22,
+        maxModuleId: 22,
+        nextModuleId: 23,
         trigger: {
           id: 1,
           path: "flow[0]",
@@ -100,11 +100,17 @@ describe("inspectBlueprint", () => {
     if (!errorRoute) throw new Error("Fixture is missing the nested error route");
     errorRoute[1].id = 18;
 
-    expect(() => inspectBlueprint(duplicate, 6648651, {
-      moduleId: 18,
-      source: "remote",
-    })).toThrow(
-      "Module #18 is ambiguous at paths: flow[1].branches[0].flow[0], flow[1].branches[0].flow[0].onerror[0].routes[0].flow[1]",
-    );
+    try {
+      inspectBlueprint(duplicate, 6648651, { moduleId: 18, source: "remote" });
+      throw new Error("Expected duplicate lookup to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(DuplicateModuleIdsError);
+      expect((error as DuplicateModuleIdsError).duplicates).toEqual({
+        "18": [
+          "flow[1].branches[0].flow[0]",
+          "flow[1].branches[0].flow[0].onerror[0].routes[0].flow[1]",
+        ],
+      });
+    }
   });
 });
