@@ -217,7 +217,7 @@ describe("run command", () => {
     });
   });
 
-  test("the CLI wait timeout aborts an in-flight run request", async () => {
+  test("does not abort a slow responsive POST and retains its ID after the polling deadline", async () => {
     let receivedSignal: AbortSignal | undefined;
     const h = harness({
       runScenario: async (
@@ -226,21 +226,21 @@ describe("run command", () => {
         signal?: AbortSignal,
       ) => {
         receivedSignal = signal;
-        return await new Promise((_, reject) => {
-          signal?.addEventListener("abort", () => {
-            reject(new DOMException("timeout", "AbortError"));
-          }, { once: true });
-        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { executionId: "exec-after-deadline", status: "RUNNING" };
       },
     });
     await h.program.parseAsync([
       "run", "-s", "7", "--data", '{"name":"Ada"}', "--yes", "--wait", "--timeout", "5ms",
     ], { from: "user" });
-    expect(receivedSignal?.aborted).toBe(true);
+    expect(receivedSignal?.aborted).toBe(false);
     expect(h.runCalls).toBe(1);
     expect(h.output[0]).toMatchObject({
       ok: false,
-      error: { code: "RUN_TIMEOUT" },
+      error: {
+        code: "RUN_STILL_RUNNING",
+        executionId: "exec-after-deadline",
+      },
     });
   });
 });
