@@ -2,8 +2,176 @@ import { describe, expect, test } from "bun:test";
 import { MakeApiClient } from "./client";
 import { MakeAppSchema, AppModuleSchema } from "./types";
 import type { RequestContext } from "./request-coordinator";
+import type { RateBucket, RateLimitSnapshot } from "./rate-limiter";
 
 describe("MakeApiClient", () => {
+  test("discovers team organization limit and uses effective 57 RPM in the organization bucket", async () => {
+    const requests: Array<{ url: string; context: RequestContext }> = [];
+    const snapshots = new Map<number | "unknown", RateLimitSnapshot>();
+    const coordinator = {
+      request: async (url: string | URL, _init: RequestInit, requestContext: RequestContext) => {
+        const stringUrl = String(url);
+        requests.push({ url: stringUrl, context: requestContext });
+        if (stringUrl.endsWith("/api/v2/teams/2186253")) {
+          return Response.json({ team: { id: 2186253, organizationId: 8430514 } });
+        }
+        if (stringUrl.endsWith("/api/v2/organizations/8430514")) {
+          return Response.json({
+            organization: { id: 8430514, license: { apiLimit: 60 } },
+          });
+        }
+        return Response.json({ scenario: { id: 123 } });
+      },
+      setOrganizationLimit: (rateBucket: RateBucket, apiLimit: number) => {
+        snapshots.set(rateBucket.organizationId, {
+          documentedRpm: apiLimit,
+          effectiveRpm: Math.floor(apiLimit * 0.95),
+          limitSource: "organization_api",
+          requestsSent: 0,
+          retries: 0,
+          cooldownMs: 0,
+        });
+      },
+      getRateLimitSnapshot: (rateBucket: RateBucket) => snapshots.get(rateBucket.organizationId) ?? {
+        documentedRpm: null,
+        effectiveRpm: 30,
+        limitSource: "fallback",
+        requestsSent: 0,
+        retries: 0,
+        cooldownMs: 0,
+      },
+    };
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+
+    expect(await client.discoverOrganizationForTeam(2186253)).toBe(true);
+    await client.fetchScenario(123);
+
+    expect(client.getRateLimitSnapshot()).toMatchObject({
+      documentedRpm: 60,
+      effectiveRpm: 57,
+      limitSource: "organization_api",
+    });
+    expect(requests.map((entry) => entry.context.bucket.organizationId)).toEqual([
+      "unknown",
+      8430514,
+      8430514,
+    ]);
+  });
+
+  test("keeps unknown 30 RPM fallback when team or organization discovery is inaccessible", async () => {
+    const requests: RequestContext[] = [];
+    const coordinator = {
+      request: async (_url: string | URL, _init: RequestInit, requestContext: RequestContext) => {
+        requests.push(requestContext);
+        return new Response("forbidden", { status: 403 });
+      },
+      setOrganizationLimit: () => {
+        throw new Error("must not set a limit");
+      },
+      getRateLimitSnapshot: () => ({
+        documentedRpm: null,
+        effectiveRpm: 30,
+        limitSource: "fallback" as const,
+        requestsSent: 0,
+        retries: 0,
+        cooldownMs: 0,
+      }),
+    };
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+
+    expect(await client.discoverOrganizationForTeam(2186253)).toBe(false);
+    expect(client.getRateLimitSnapshot()).toMatchObject({
+      documentedRpm: null,
+      effectiveRpm: 30,
+      limitSource: "fallback",
+    });
+    expect(requests[0]!.bucket.organizationId).toBe("unknown");
+  });
+
+  test("organization-scoped methods initialize rate context automatically", async () => {
+    const urls: string[] = [];
+    const coordinator = {
+      request: async (url: string | URL) => {
+        const value = String(url);
+        urls.push(value);
+        if (value.endsWith("/api/v2/organizations/8430514")) {
+          return Response.json({
+            organization: { id: 8430514, license: { apiLimit: 60 } },
+          });
+        }
+        return Response.json({ teams: [] });
+      },
+      setOrganizationLimit: () => undefined,
+      getRateLimitSnapshot: () => ({
+        documentedRpm: 60,
+        effectiveRpm: 57,
+        limitSource: "organization_api" as const,
+        requestsSent: 0,
+        retries: 0,
+        cooldownMs: 0,
+      }),
+    };
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+
+    expect(await client.listTeams(8430514)).toEqual([]);
+    expect(urls).toEqual([
+      "https://eu1.make.com/api/v2/organizations/8430514",
+      "https://eu1.make.com/api/v2/teams?organizationId=8430514",
+    ]);
+  });
+
+  test("bare scenario discovery resolves scenario to team to organization", async () => {
+    const urls: string[] = [];
+    const coordinator = {
+      request: async (url: string | URL) => {
+        const value = String(url);
+        urls.push(value);
+        if (value.endsWith("/api/v2/scenarios/6648651")) {
+          return Response.json({ scenario: { id: 6648651, teamId: 2186253 } });
+        }
+        if (value.endsWith("/api/v2/teams/2186253")) {
+          return Response.json({ team: { id: 2186253, organizationId: 8430514 } });
+        }
+        return Response.json({
+          organization: { id: 8430514, license: { apiLimit: 60 } },
+        });
+      },
+      setOrganizationLimit: () => undefined,
+      getRateLimitSnapshot: () => ({
+        documentedRpm: 60,
+        effectiveRpm: 57,
+        limitSource: "organization_api" as const,
+        requestsSent: 0,
+        retries: 0,
+        cooldownMs: 0,
+      }),
+    };
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+
+    expect(await client.discoverOrganizationForScenario(6648651)).toBe(true);
+    expect(urls).toEqual([
+      "https://eu1.make.com/api/v2/scenarios/6648651",
+      "https://eu1.make.com/api/v2/teams/2186253",
+      "https://eu1.make.com/api/v2/organizations/8430514",
+    ]);
+  });
+
   test("routes requests through one coordinator with authentication and rate context", async () => {
     const requests: Array<{ url: string; init: RequestInit; context: RequestContext }> = [];
     const coordinator = {

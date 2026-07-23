@@ -4,8 +4,65 @@ import { applyFixes } from "./fixer/index";
 import { formatReport } from "./reporter/index";
 import simpleBlueprint from "../tests/fixtures/simple-blueprint.json";
 import type { Blueprint } from "./make-api/types";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 describe("CLI commands", () => {
+  test("scenario URL resolution discovers team and organization details before production calls", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-cli-rate-"));
+    const preload = join(directory, "mock-fetch.ts");
+    await Bun.write(preload, `
+      globalThis.fetch = async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        console.error("MOCK_FETCH " + new URL(url).pathname);
+        if (url.endsWith("/api/v2/teams/2186253")) {
+          return Response.json({ team: { id: 2186253, organizationId: 8430514 } });
+        }
+        if (url.endsWith("/api/v2/organizations/8430514")) {
+          return Response.json({ organization: { id: 8430514, license: { apiLimit: 60 } } });
+        }
+        if (url.includes("/api/v2/scenarios/6648651/logs")) {
+          return Response.json({ scenarioLogs: [] });
+        }
+        return new Response("not found", { status: 404 });
+      };
+    `);
+    const proc = Bun.spawn([
+      "bun",
+      "--preload",
+      preload,
+      "src/cli.ts",
+      "executions",
+      "-s",
+      "https://eu1.make.com/2186253/scenarios/6648651/edit",
+      "--json",
+    ], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        MAKE_API_TOKEN: "fake",
+        MAKE_FIXER_RATE_DB: join(directory, "rate.sqlite"),
+      },
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    rmSync(directory, { recursive: true, force: true });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual([]);
+    expect(stderr.indexOf("/api/v2/teams/2186253")).toBeLessThan(
+      stderr.indexOf("/api/v2/organizations/8430514"),
+    );
+    expect(stderr.indexOf("/api/v2/organizations/8430514")).toBeLessThan(
+      stderr.indexOf("/api/v2/scenarios/6648651/logs"),
+    );
+  });
+
   test("CLI has fetch command", async () => {
     const proc = Bun.spawn(["bun", "src/cli.ts", "fetch", "--help"], {
       stdout: "pipe",

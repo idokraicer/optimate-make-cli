@@ -8,7 +8,7 @@ const DEFAULT_REQUEST_RETRIES = 5;
 const DEFAULT_COMMAND_RETRIES = 20;
 const MAX_BACKOFF_MS = 30_000;
 const DEFAULT_429_WAIT_MS = 60_000;
-const SENSITIVE_QUERY_KEY = /(?:authorization|token|api[-_]?key|cookie|secret|password|credential)/i;
+const CREDENTIAL_HEADER = /(?:authorization|cookie|token|api[-_]?key|secret|credential)/i;
 const SAFE_DEDUP_HEADERS = new Set([
   "accept",
   "content-type",
@@ -30,6 +30,8 @@ export interface RateLimiterStore {
   getSnapshot(bucket: RateBucket): RateLimitSnapshot;
   noteRetry(bucket: RateBucket): void;
   recordExemptRequest(bucket: RateBucket): void;
+  setOrganizationLimit(bucket: RateBucket, apiLimit: number): void;
+  acquireExecutionLease(bucket: RateBucket, signal?: AbortSignal): Promise<() => void>;
 }
 
 export type MutationReconciliation = "retry" | Response | undefined;
@@ -59,7 +61,20 @@ export interface RequestCoordinatorLike {
     init: RequestInit,
     context: RequestContext,
   ): Promise<Response>;
+  setOrganizationLimit?(bucket: RateBucket, apiLimit: number): void;
+  getRateLimitSnapshot?(bucket: RateBucket): RateLimitSnapshot;
 }
+
+const REQUEST_METADATA_PROPERTIES = [
+  "redirect",
+  "credentials",
+  "cache",
+  "integrity",
+  "keepalive",
+  "referrer",
+  "referrerPolicy",
+  "mode",
+] as const;
 
 function abortError(signal?: AbortSignal): DOMException {
   if (signal?.reason instanceof DOMException && signal.reason.name === "AbortError") {
@@ -101,8 +116,8 @@ export function parseRetryAfter(value: string | null, nowMs = Date.now()): numbe
   return Math.max(0, dateMs - nowMs);
 }
 
-function methodOf(init: RequestInit): string {
-  return (init.method ?? "GET").toUpperCase();
+function methodOf(url: string | URL | Request, init: RequestInit): string {
+  return (init.method ?? (url instanceof Request ? url.method : "GET")).toUpperCase();
 }
 
 function isMutation(method: string): boolean {
@@ -110,28 +125,103 @@ function isMutation(method: string): boolean {
 }
 
 function isDocumentedRateExempt(url: string | URL | Request, init: RequestInit): boolean {
-  if (methodOf(init) !== "POST") return false;
+  if (methodOf(url, init) !== "POST") return false;
   const parsed = new URL(url instanceof Request ? url.url : String(url));
   return /^\/api\/v2\/scenarios\/[^/]+\/run\/?$/.test(parsed.pathname);
 }
 
-function deduplicationKey(url: string | URL | Request, init: RequestInit): string | null {
-  if (methodOf(init) !== "GET") return null;
+function effectiveHeaders(url: string | URL | Request, init: RequestInit): Headers {
+  const headers = new Headers(url instanceof Request ? url.headers : undefined);
+  for (const [name, value] of new Headers(init.headers)) headers.set(name, value);
+  return headers;
+}
+
+function opaqueHash(value: string): string {
+  return new Bun.CryptoHasher("sha256").update(value).digest("hex");
+}
+
+function deduplicationKey(
+  url: string | URL | Request,
+  init: RequestInit,
+  bucket: RateBucket,
+): string | null {
+  if (methodOf(url, init) !== "GET") return null;
   const rawUrl = url instanceof Request ? url.url : String(url);
-  let parsedUrl: URL;
   try {
-    parsedUrl = new URL(rawUrl);
+    new URL(rawUrl);
   } catch {
     return null;
   }
-  if ([...parsedUrl.searchParams.keys()].some((name) => SENSITIVE_QUERY_KEY.test(name))) {
-    return null;
-  }
-  const headers = new Headers(init.headers);
+  const headers = effectiveHeaders(url, init);
   const safeHeaders = [...headers.entries()]
     .filter(([name]) => SAFE_DEDUP_HEADERS.has(name.toLowerCase()))
     .sort(([left], [right]) => left.localeCompare(right));
-  return JSON.stringify(["GET", rawUrl, safeHeaders]);
+  const credentialScope = opaqueHash(JSON.stringify(
+    [...headers.entries()]
+      .filter(([name]) => CREDENTIAL_HEADER.test(name))
+      .sort(([left], [right]) => left.localeCompare(right)),
+  ));
+  return opaqueHash(JSON.stringify([
+    "GET",
+    rawUrl,
+    bucket.zone,
+    bucket.organizationId,
+    credentialScope,
+    safeHeaders,
+  ]));
+}
+
+function cloneRequestForAttempt(
+  source: Request,
+  init: RequestInit,
+  method: string,
+  body: ArrayBuffer | undefined,
+  signal?: AbortSignal,
+): Request {
+  const initValues = init as RequestInit & Record<string, unknown>;
+  const sourceValues = source as Request & Record<string, unknown>;
+  const metadata = Object.fromEntries(
+    REQUEST_METADATA_PROPERTIES.map((property) => [
+      property,
+      initValues[property] ?? sourceValues[property],
+    ]),
+  );
+  const attempt = new Request(source.url, {
+    ...metadata,
+    ...init,
+    method,
+    headers: effectiveHeaders(source, init),
+    body: body?.slice(0),
+    signal,
+  });
+  for (const property of REQUEST_METADATA_PROPERTIES) {
+    const value = metadata[property];
+    if (value === undefined || attempt[property] === value) continue;
+    Object.defineProperty(attempt, property, {
+      configurable: true,
+      enumerable: true,
+      value,
+    });
+  }
+  return attempt;
+}
+
+async function requestBodyForReplay(
+  source: Request,
+  init: RequestInit,
+  method: string,
+): Promise<ArrayBuffer | undefined> {
+  if (method === "GET" || method === "HEAD") return undefined;
+  if (init.body !== undefined && init.body !== null) {
+    const request = new Request(source.url, {
+      method,
+      headers: effectiveHeaders(source, init),
+      body: init.body,
+    });
+    return request.arrayBuffer();
+  }
+  if (source.body === null) return undefined;
+  return source.clone().arrayBuffer();
 }
 
 export class RequestCoordinator implements RequestCoordinatorLike {
@@ -158,8 +248,9 @@ export class RequestCoordinator implements RequestCoordinatorLike {
     init: RequestInit = {},
     context: RequestContext,
   ): Promise<Response> {
-    if (context.signal?.aborted) throw abortError(context.signal);
-    const key = deduplicationKey(url, init);
+    const signal = context.signal ?? init.signal ?? (url instanceof Request ? url.signal : undefined);
+    if (signal?.aborted) throw abortError(signal);
+    const key = signal ? null : deduplicationKey(url, init, context.bucket);
     if (!key) return this.execute(url, init, context);
 
     let pending = this.inFlightGets.get(key);
@@ -178,11 +269,16 @@ export class RequestCoordinator implements RequestCoordinatorLike {
     init: RequestInit,
     context: RequestContext,
   ): Promise<Response> {
-    const method = methodOf(init);
-    const signal = context.signal ?? init.signal ?? undefined;
+    const method = methodOf(url, init);
+    const signal = context.signal
+      ?? init.signal
+      ?? (url instanceof Request ? url.signal : undefined);
     const maxRetries = context.maxRetries ?? DEFAULT_REQUEST_RETRIES;
     const exempt = context.organizationRateExempt === true
       && isDocumentedRateExempt(url, { ...init, method });
+    const replayBody = url instanceof Request
+      ? await requestBodyForReplay(url, init, method)
+      : undefined;
     let boundedRetries = 0;
 
     while (true) {
@@ -196,17 +292,35 @@ export class RequestCoordinator implements RequestCoordinatorLike {
       }
       if (signal?.aborted) throw abortError(signal);
 
-      let response: Response;
+      let response: Response | undefined;
+      let requestError: unknown;
+      let requestFailed = false;
+      const release = await this.limiter.acquireExecutionLease(context.bucket, signal);
       try {
-        response = await this.executor(url, { ...init, method, signal });
+        if (signal?.aborted) throw abortError(signal);
+        if (url instanceof Request) {
+          const attempt = cloneRequestForAttempt(url, init, method, replayBody, signal);
+          response = await this.executor(attempt);
+        } else {
+          response = await this.executor(url, { ...init, method, signal });
+        }
       } catch (error) {
+        requestFailed = true;
+        requestError = error;
+      } finally {
+        release();
+      }
+
+      if (requestFailed) {
         if (signal?.aborted) throw abortError(signal);
         if (isMutation(method) && !context.networkRetrySafe) {
-          const reconciliation = await context.reconcileMutation?.(error);
+          const reconciliation = await context.reconcileMutation?.(requestError);
           if (reconciliation instanceof Response) return reconciliation;
-          if (reconciliation !== "retry") throw error;
+          if (reconciliation !== "retry") throw requestError;
         }
-        if (!this.consumeBoundedRetry(context.bucket, boundedRetries, maxRetries)) throw error;
+        if (!this.consumeBoundedRetry(context.bucket, boundedRetries, maxRetries)) {
+          throw requestError;
+        }
         boundedRetries++;
         await sleepWithAbort(
           this.sleep,
@@ -215,6 +329,7 @@ export class RequestCoordinator implements RequestCoordinatorLike {
         );
         continue;
       }
+      if (!response) throw new Error("Request executor returned no response");
 
       if (response.status === 429) {
         this.limiter.noteRetry(context.bucket);
@@ -256,6 +371,15 @@ export class RequestCoordinator implements RequestCoordinatorLike {
     const cap = Math.min(MAX_BACKOFF_MS, 1_000 * (2 ** (retryNumber - 1)));
     return Math.floor(this.random() * cap);
   }
+
+  setOrganizationLimit(bucket: RateBucket, apiLimit: number): void {
+    this.limiter.setOrganizationLimit(bucket, apiLimit);
+  }
+
+  getRateLimitSnapshot(bucket: RateBucket): RateLimitSnapshot {
+    return this.limiter.getSnapshot(bucket);
+  }
+
 }
 
 let defaultCoordinator: RequestCoordinator | undefined;

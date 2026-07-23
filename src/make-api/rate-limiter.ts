@@ -7,6 +7,9 @@ export const FALLBACK_RPM = 30;
 const ROLLING_WINDOW_MS = 60_000;
 const LIMIT_CACHE_TTL_MS = 60 * 60_000;
 const CONTENTION_JITTER_MS = 250;
+const MAX_IN_FLIGHT_PER_BUCKET = 2;
+const INFLIGHT_LEASE_TTL_MS = 10 * 60_000;
+const INFLIGHT_POLL_MS = 25;
 
 export interface RateBucket {
   zone: string;
@@ -130,6 +133,15 @@ export class SharedRateLimiter {
         api_limit INTEGER NOT NULL,
         fetched_at_ms INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS inflight_leases (
+        bucket TEXT NOT NULL,
+        lease_id TEXT PRIMARY KEY,
+        pid INTEGER NOT NULL,
+        acquired_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_inflight_leases_bucket_expiry
+        ON inflight_leases(bucket, expires_at_ms);
     `);
   }
 
@@ -181,6 +193,28 @@ export class SharedRateLimiter {
   recordExemptRequest(bucket: RateBucket): void {
     const bucketKey = keyForBucket(bucket);
     this.requestsSent.set(bucketKey, (this.requestsSent.get(bucketKey) ?? 0) + 1);
+  }
+
+  async acquireExecutionLease(
+    bucket: RateBucket,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    const bucketKey = keyForBucket(bucket);
+    const leaseId = `${this.pid}:${crypto.randomUUID()}`;
+
+    while (true) {
+      if (signal?.aborted) throw abortError(signal);
+      if (this.tryAcquireExecutionLease(bucketKey, leaseId, this.now())) {
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          this.db.query("DELETE FROM inflight_leases WHERE lease_id = ?").run(leaseId);
+        };
+      }
+      const jitterMs = Math.floor(this.random() * CONTENTION_JITTER_MS);
+      await sleepWithAbort(this.sleep, INFLIGHT_POLL_MS + jitterMs, signal);
+    }
   }
 
   getSnapshot(bucket: RateBucket): RateLimitSnapshot {
@@ -266,6 +300,54 @@ export class SharedRateLimiter {
         reserved: false,
         waitMs: Math.max(1, oldest + ROLLING_WINDOW_MS - now),
       };
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the original database error.
+      }
+      throw error;
+    }
+  }
+
+  private tryAcquireExecutionLease(
+    bucketKey: string,
+    leaseId: string,
+    now: number,
+  ): boolean {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.query(`
+        DELETE FROM inflight_leases
+        WHERE expires_at_ms <= ?
+      `).run(now);
+      const count = this.db.query<CountRow, [string]>(`
+        SELECT COUNT(*) AS count
+        FROM inflight_leases
+        WHERE bucket = ?
+      `).get(bucketKey)?.count ?? 0;
+      if (count >= MAX_IN_FLIGHT_PER_BUCKET) {
+        this.db.exec("COMMIT");
+        return false;
+      }
+      this.db.query(`
+        INSERT INTO inflight_leases (
+          bucket,
+          lease_id,
+          pid,
+          acquired_at_ms,
+          expires_at_ms
+        )
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        bucketKey,
+        leaseId,
+        this.pid,
+        now,
+        now + INFLIGHT_LEASE_TTL_MS,
+      );
+      this.db.exec("COMMIT");
+      return true;
     } catch (error) {
       try {
         this.db.exec("ROLLBACK");

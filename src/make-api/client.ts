@@ -13,6 +13,12 @@ import {
   type RequestContext,
   type RequestCoordinatorLike,
 } from "./request-coordinator";
+import {
+  FALLBACK_RPM,
+  effectiveRequestsPerMinute,
+  type RateBucket,
+  type RateLimitSnapshot,
+} from "./rate-limiter";
 
 export interface MakeApiConfig {
   token: string;
@@ -26,6 +32,7 @@ export class MakeApiClient {
   private baseUrl: string;
   private organizationId: number | "unknown";
   private coordinator?: RequestCoordinatorLike;
+  private documentedRpm: number | null = null;
 
   constructor(config: MakeApiConfig) {
     this.token = config.token;
@@ -99,6 +106,104 @@ export class MakeApiClient {
       },
       ...requestContext,
     });
+  }
+
+  private rateBucket(organizationId = this.organizationId): RateBucket {
+    return {
+      zone: new URL(this.baseUrl).hostname.replace(/\.make\.com$/, ""),
+      organizationId,
+    };
+  }
+
+  getRateLimitSnapshot(): RateLimitSnapshot {
+    this.coordinator ??= getDefaultRequestCoordinator();
+    return this.coordinator.getRateLimitSnapshot?.(this.rateBucket()) ?? {
+      documentedRpm: this.documentedRpm,
+      effectiveRpm: this.documentedRpm === null
+        ? FALLBACK_RPM
+        : effectiveRequestsPerMinute(this.documentedRpm),
+      limitSource: this.documentedRpm === null ? "fallback" : "organization_api",
+      requestsSent: 0,
+      retries: 0,
+      cooldownMs: 0,
+    };
+  }
+
+  async fetchTeam(teamId: number): Promise<any> {
+    const res = await this.request(
+      `${this.baseUrl}/api/v2/teams/${teamId}`,
+      {},
+      { organizationId: "unknown" },
+    );
+    if (!res.ok) {
+      throw new Error(`Make API fetch team error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return data.team ?? data;
+  }
+
+  async fetchOrganization(organizationId: number): Promise<any> {
+    const res = await this.request(
+      `${this.baseUrl}/api/v2/organizations/${organizationId}`,
+      {},
+      { organizationId },
+    );
+    if (!res.ok) {
+      throw new Error(`Make API fetch organization error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    const organization = data.organization ?? data;
+    this.organizationId = organizationId;
+    const apiLimit = Number(organization?.license?.apiLimit);
+    if (Number.isFinite(apiLimit) && apiLimit > 0) {
+      this.documentedRpm = Math.floor(apiLimit);
+      this.coordinator?.setOrganizationLimit?.(
+        this.rateBucket(organizationId),
+        this.documentedRpm,
+      );
+    }
+    return organization;
+  }
+
+  async discoverOrganization(organizationId: number): Promise<boolean> {
+    try {
+      await this.fetchOrganization(organizationId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async discoverOrganizationForTeam(teamId: number): Promise<boolean> {
+    try {
+      const team = await this.fetchTeam(teamId);
+      const organizationId = Number(
+        team.organizationId ?? team.organization?.id ?? team.organization_id,
+      );
+      if (!Number.isInteger(organizationId) || organizationId <= 0) return false;
+      return await this.discoverOrganization(organizationId);
+    } catch {
+      return false;
+    }
+  }
+
+  async discoverOrganizationForScenario(scenarioId: number): Promise<boolean> {
+    try {
+      const scenario = await this.fetchScenario(scenarioId);
+      const organizationId = Number(
+        scenario.organizationId
+        ?? scenario.organization?.id
+        ?? scenario.organization_id,
+      );
+      if (Number.isInteger(organizationId) && organizationId > 0) {
+        return await this.discoverOrganization(organizationId);
+      }
+      const teamId = Number(scenario.teamId ?? scenario.team?.id ?? scenario.team_id);
+      if (!Number.isInteger(teamId) || teamId <= 0) return false;
+      return await this.discoverOrganizationForTeam(teamId);
+    } catch {
+      return false;
+    }
   }
 
   async fetchBlueprint(scenarioId: number): Promise<{ blueprint: Blueprint; raw: any }> {
@@ -204,6 +309,7 @@ export class MakeApiClient {
   }
 
   async listTeams(organizationId: number): Promise<any[]> {
+    await this.discoverOrganization(organizationId);
     const url = `${this.baseUrl}/api/v2/teams?organizationId=${organizationId}`;
     const res = await this.request(url, {}, { organizationId });
     if (!res.ok) {
@@ -221,6 +327,11 @@ export class MakeApiClient {
     limit?: number;
     offset?: number;
   }): Promise<any[]> {
+    if (opts.organizationId != null) {
+      await this.discoverOrganization(opts.organizationId);
+    } else if (opts.teamId != null) {
+      await this.discoverOrganizationForTeam(opts.teamId);
+    }
     const params = new URLSearchParams();
     if (opts.teamId != null) params.set("teamId", String(opts.teamId));
     if (opts.organizationId != null) params.set("organizationId", String(opts.organizationId));
