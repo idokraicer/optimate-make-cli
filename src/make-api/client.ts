@@ -8,20 +8,30 @@ import {
   type AppModule,
 } from "./types";
 import { BUILTIN_MODULES } from "../data/builtin-modules";
-import { fetchWithRetry } from "./fetch-retry";
+import {
+  getDefaultRequestCoordinator,
+  type RequestContext,
+  type RequestCoordinatorLike,
+} from "./request-coordinator";
 
 export interface MakeApiConfig {
   token: string;
   baseUrl: string;
+  organizationId?: number;
+  coordinator?: RequestCoordinatorLike;
 }
 
 export class MakeApiClient {
   private token: string;
   private baseUrl: string;
+  private organizationId: number | "unknown";
+  private coordinator?: RequestCoordinatorLike;
 
   constructor(config: MakeApiConfig) {
     this.token = config.token;
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
+    this.organizationId = config.organizationId ?? "unknown";
+    this.coordinator = config.coordinator;
   }
 
   getBlueprintUrl(scenarioId: number): string {
@@ -70,10 +80,29 @@ export class MakeApiClient {
     };
   }
 
-  async fetchBlueprint(scenarioId: number): Promise<{ blueprint: Blueprint; raw: any }> {
-    const res = await fetchWithRetry(this.getBlueprintUrl(scenarioId), {
-      headers: this.headers(),
+  private async request(
+    url: string | URL,
+    init: RequestInit = {},
+    context: Partial<Omit<RequestContext, "bucket">> & {
+      organizationId?: number | "unknown";
+    } = {},
+  ): Promise<Response> {
+    const headers = new Headers(init.headers);
+    for (const [name, value] of Object.entries(this.headers())) headers.set(name, value);
+    const parsed = new URL(String(url));
+    const { organizationId, ...requestContext } = context;
+    this.coordinator ??= getDefaultRequestCoordinator();
+    return this.coordinator.request(url, { ...init, headers }, {
+      bucket: {
+        zone: parsed.hostname.replace(/\.make\.com$/, ""),
+        organizationId: organizationId ?? this.organizationId,
+      },
+      ...requestContext,
     });
+  }
+
+  async fetchBlueprint(scenarioId: number): Promise<{ blueprint: Blueprint; raw: any }> {
+    const res = await this.request(this.getBlueprintUrl(scenarioId));
     if (!res.ok) {
       throw new Error(`Make API error ${res.status}: ${await res.text()}`);
     }
@@ -98,9 +127,8 @@ export class MakeApiClient {
       blueprint: JSON.stringify(blueprint),
     });
 
-    const res = await fetchWithRetry(this.getScenarioUrl(scenarioId), {
+    const res = await this.request(this.getScenarioUrl(scenarioId), {
       method: "PATCH",
-      headers: this.headers(),
       body,
     });
 
@@ -110,9 +138,8 @@ export class MakeApiClient {
   }
 
   async createNote(scenarioId: number, moduleIds: number[], content: string): Promise<Note> {
-    const res = await fetchWithRetry(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`, {
+    const res = await this.request(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`, {
       method: "POST",
-      headers: this.headers(),
       body: JSON.stringify({ moduleIds, content }),
     });
 
@@ -126,9 +153,7 @@ export class MakeApiClient {
 
   async fetchNotes(scenarioId: number): Promise<Note[]> {
     try {
-      const res = await fetchWithRetry(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`, {
-        headers: this.headers(),
-      });
+      const res = await this.request(`${this.baseUrl}/api/v2/scenarios/${scenarioId}/notes`);
       if (!res.ok) return [];
       const data = await res.json();
       return Array.isArray(data.notes) ? data.notes : [];
@@ -143,7 +168,7 @@ export class MakeApiClient {
     const qs = params.toString();
     const url = `${this.baseUrl}/api/v2/imt/apps-meta${qs ? `?${qs}` : ""}`;
 
-    const res = await fetchWithRetry(url, { headers: this.headers() });
+    const res = await this.request(url);
     if (!res.ok) {
       throw new Error(`Make API error ${res.status}: ${await res.text()}`);
     }
@@ -159,7 +184,7 @@ export class MakeApiClient {
 
     const url = `${this.baseUrl}/api/v2/imt/apps/${encodeURIComponent(appName)}/${version}/modules-with-credentials`;
 
-    const res = await fetchWithRetry(url, { headers: this.headers() });
+    const res = await this.request(url);
     if (!res.ok) {
       throw new Error(`Make API error ${res.status}: ${await res.text()}`);
     }
@@ -170,7 +195,7 @@ export class MakeApiClient {
   }
 
   async listOrganizations(): Promise<any[]> {
-    const res = await this.fetchWithBackoff(`${this.baseUrl}/api/v2/organizations`);
+    const res = await this.request(`${this.baseUrl}/api/v2/organizations`);
     if (!res.ok) {
       throw new Error(`Make API list organizations error ${res.status}: ${await res.text()}`);
     }
@@ -180,7 +205,7 @@ export class MakeApiClient {
 
   async listTeams(organizationId: number): Promise<any[]> {
     const url = `${this.baseUrl}/api/v2/teams?organizationId=${organizationId}`;
-    const res = await this.fetchWithBackoff(url);
+    const res = await this.request(url, {}, { organizationId });
     if (!res.ok) {
       throw new Error(`Make API list teams error ${res.status}: ${await res.text()}`);
     }
@@ -205,7 +230,9 @@ export class MakeApiClient {
     if (opts.offset != null) params.set("pg[offset]", String(opts.offset));
 
     const url = `${this.baseUrl}/api/v2/scenarios?${params.toString()}`;
-    const res = await fetchWithRetry(url, { headers: this.headers() });
+    const res = await this.request(url, {}, {
+      organizationId: opts.organizationId ?? this.organizationId,
+    });
     if (!res.ok) {
       throw new Error(`Make API list scenarios error ${res.status}: ${await res.text()}`);
     }
@@ -214,7 +241,7 @@ export class MakeApiClient {
   }
 
   async fetchScenario(scenarioId: number): Promise<any> {
-    const res = await fetchWithRetry(this.getScenarioUrl(scenarioId), { headers: this.headers() });
+    const res = await this.request(this.getScenarioUrl(scenarioId));
     if (!res.ok) {
       throw new Error(`Make API fetch scenario error ${res.status}: ${await res.text()}`);
     }
@@ -240,7 +267,7 @@ export class MakeApiClient {
     params.set("pg[sortDir]", opts?.sortDir ?? "desc");
 
     const url = `${this.baseUrl}/api/v2/scenarios/${scenarioId}/logs?${params.toString()}`;
-    const res = await this.fetchWithBackoff(url);
+    const res = await this.request(url);
     if (!res.ok) {
       throw new Error(`Make API list executions error ${res.status}: ${await res.text()}`);
     }
@@ -248,20 +275,9 @@ export class MakeApiClient {
     return Array.isArray(data.scenarioLogs) ? data.scenarioLogs : (Array.isArray(data.logs) ? data.logs : []);
   }
 
-  /**
-   * Fetch wrapper that injects auth headers and rides through Make.com rate
-   * limits via the shared fetchWithRetry helper (429/503, Retry-After aware,
-   * exponential backoff).
-   */
-  private async fetchWithBackoff(url: string, init?: RequestInit): Promise<Response> {
-    const headers = { ...(init?.headers ?? {}), ...this.headers() };
-    return fetchWithRetry(url, { ...init, headers });
-  }
-
   async fetchExecution(scenarioId: number, executionId: string): Promise<any> {
-    const res = await fetchWithRetry(
+    const res = await this.request(
       `${this.baseUrl}/api/v2/scenarios/${scenarioId}/executions/${encodeURIComponent(executionId)}`,
-      { headers: this.headers() },
     );
     if (!res.ok) {
       throw new Error(`Make API fetch execution error ${res.status}: ${await res.text()}`);
@@ -270,7 +286,7 @@ export class MakeApiClient {
   }
 
   async fetchExecutionLog(scenarioId: number, executionId: string): Promise<any> {
-    const res = await this.fetchWithBackoff(this.getExecutionLogUrl(scenarioId, executionId));
+    const res = await this.request(this.getExecutionLogUrl(scenarioId, executionId));
     if (!res.ok) {
       throw new Error(`Make API fetch execution log error ${res.status}: ${await res.text()}`);
     }
@@ -284,7 +300,7 @@ export class MakeApiClient {
     limit?: number;
     sortDir?: "asc" | "desc";
   }): Promise<any[]> {
-    const res = await this.fetchWithBackoff(this.getHookLogsUrl(hookId, opts));
+    const res = await this.request(this.getHookLogsUrl(hookId, opts));
     if (!res.ok) {
       throw new Error(`Make API list webhook logs error ${res.status}: ${await res.text()}`);
     }
@@ -293,7 +309,7 @@ export class MakeApiClient {
   }
 
   async fetchHookLog(hookId: number | string, hookLogId: string): Promise<any> {
-    const res = await this.fetchWithBackoff(this.getHookLogUrl(hookId, hookLogId));
+    const res = await this.request(this.getHookLogUrl(hookId, hookLogId));
     if (!res.ok) {
       throw new Error(`Make API fetch webhook log error ${res.status}: ${await res.text()}`);
     }
