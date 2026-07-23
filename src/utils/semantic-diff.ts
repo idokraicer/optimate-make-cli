@@ -210,7 +210,10 @@ export function semanticDiff(before: Blueprint, after: Blueprint): SemanticDiff 
 
   const recordMovement = (beforeModule: IdentifiedModule, afterModule: IdentifiedModule) => {
     direct.add(afterModule.id);
-    for (const ancestorId of ancestorIds(afterModule.path, afterModules)) {
+    for (const ancestorId of [
+      ...ancestorIds(beforeModule.path, beforeModuleList),
+      ...ancestorIds(afterModule.path, afterModules),
+    ]) {
       ancestors.add(ancestorId);
     }
     changes.push({
