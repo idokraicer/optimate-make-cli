@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { isExcludedModule, isTriggerModule, getMaxModuleId } from "./module-helpers";
+import type { Blueprint } from "../make-api/types";
+import fixture from "../../tests/fixtures/if-else-blueprint.json";
 
 describe("isExcludedModule", () => {
   test("excludes builtin modules", () => {
@@ -59,5 +61,9 @@ describe("getMaxModuleId", () => {
       { id: 5, module: "c:d" },
     ] as any;
     expect(getMaxModuleId(flow)).toBe(10);
+  });
+
+  test("finds the maximum ID inside branch error-handler routes", () => {
+    expect(getMaxModuleId((fixture as Blueprint).flow) + 1).toBeGreaterThanOrEqual(22);
   });
 });

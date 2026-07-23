@@ -1,4 +1,5 @@
 import type { Module } from "../make-api/types";
+import { walkModules } from "./blueprint-traversal";
 
 const EXCLUDED_PREFIXES = [
   "builtin:",
@@ -41,24 +42,10 @@ export function getModuleCustomName(module: Module): string | null {
 }
 
 export function getMaxModuleId(flow: Module[]): number {
-  let max = 0;
-  for (const mod of flow) {
-    if (mod.id > max) max = mod.id;
-    if (Array.isArray(mod.onerror)) {
-      for (const handler of mod.onerror) {
-        if (handler.id > max) max = handler.id;
-      }
-    }
-    if (Array.isArray(mod.routes)) {
-      for (const route of mod.routes) {
-        if (Array.isArray(route.flow)) {
-          const routeMax = getMaxModuleId(route.flow);
-          if (routeMax > max) max = routeMax;
-        }
-      }
-    }
-  }
-  return max;
+  return walkModules(flow)
+    .map(({ module }) => module.id)
+    .filter((id): id is number => typeof id === "number")
+    .reduce((max, id) => Math.max(max, id), 0);
 }
 
 /** Translate module type string to Hebrew label for recommendations */

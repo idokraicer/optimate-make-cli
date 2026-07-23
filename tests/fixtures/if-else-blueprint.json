@@ -1,0 +1,43 @@
+{
+  "name": "Nested If/Else error handler",
+  "flow": [
+    {
+      "id": 1,
+      "module": "gateway:CustomWebHook",
+      "version": 1
+    },
+    {
+      "id": 17,
+      "module": "builtin:BasicIfElse",
+      "version": 1,
+      "branches": [
+        {
+          "flow": [
+            {
+              "id": 18,
+              "module": "http:ActionSendData",
+              "version": 1,
+              "onerror": [
+                {
+                  "id": null,
+                  "module": "builtin:Router",
+                  "routes": [
+                    {
+                      "flow": [
+                        {
+                          "id": 21,
+                          "module": "builtin:Ignore",
+                          "version": 1
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

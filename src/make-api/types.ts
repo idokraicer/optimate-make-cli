@@ -44,15 +44,6 @@ export const BREAK_DEFAULTS = {
   interval: 15, // minutes
 } as const satisfies z.infer<typeof BreakMapperSchema>;
 
-export const ErrorHandlerSchema: z.ZodType<any> = z.object({
-  id: z.number().nullable(),
-  module: z.string(),
-  version: z.number().optional(),
-  parameters: z.any().optional(),
-  mapper: z.any().optional(),
-  metadata: ModuleMetadataSchema.optional(),
-}).catchall(z.unknown());
-
 export const ModuleSchema: z.ZodType<any> = z.lazy(() =>
   z.object({
     id: z.number().nullable(),
@@ -63,14 +54,17 @@ export const ModuleSchema: z.ZodType<any> = z.lazy(() =>
     metadata: ModuleMetadataSchema.optional(),
     parameters: z.any().optional(),
     filter: FilterSchema.nullable().optional(),
-    onerror: z.array(ErrorHandlerSchema).nullable().optional(),
+    onerror: z.array(ModuleSchema).nullable().optional(),
     routes: z.array(RouteSchema).nullable().optional(),
+    branches: z.array(RouteSchema).nullable().optional(),
   }).catchall(z.unknown())
 );
 
-export const RouteSchema = z.object({
+export const RouteSchema: z.ZodType<any> = z.object({
   flow: z.array(ModuleSchema).optional(),
 }).catchall(z.unknown());
+
+export const ErrorHandlerSchema: z.ZodType<any> = ModuleSchema;
 
 export const BlueprintSchedulingSchema = z.object({
   type: z.string().optional(),
