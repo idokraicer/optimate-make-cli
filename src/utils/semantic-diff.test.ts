@@ -84,4 +84,81 @@ describe("semanticDiff", () => {
     expect(semanticDiff(inserted, removed).directlyModifiedModules).toEqual([]);
     expect(semanticDiff(inserted, removed).changes).toEqual([]);
   });
+
+  test("reports route metadata leaves on the owning module", () => {
+    const before = {
+      name: "Route metadata",
+      flow: [{
+        id: 1,
+        module: "flow:Router",
+        routes: [{ filter: { name: "before" }, flow: [] }],
+      }],
+    } as Blueprint;
+    const after = structuredClone(before);
+    after.flow[0].routes![0].filter.name = "after";
+
+    expect(semanticDiff(before, after)).toEqual({
+      directlyModifiedModules: [1],
+      ancestorModules: [],
+      changes: [{
+        path: "flow[0].routes[0].filter.name",
+        moduleId: 1,
+        before: "before",
+        after: "after",
+      }],
+    });
+  });
+
+  test("reports a same-ID module moving between routes as an owned semantic movement", () => {
+    const before = {
+      name: "Move module",
+      flow: [{
+        id: 1,
+        module: "flow:Router",
+        routes: [
+          { flow: [{ id: 2, module: "http:ActionSendData", mapper: { value: "same" } }] },
+          { flow: [] },
+        ],
+      }],
+    } as Blueprint;
+    const after = structuredClone(before);
+    const [moved] = after.flow[0].routes![0].flow!;
+    after.flow[0].routes![0].flow = [];
+    after.flow[0].routes![1].flow = [moved];
+
+    expect(semanticDiff(before, after)).toEqual({
+      directlyModifiedModules: [2],
+      ancestorModules: [1],
+      changes: [{
+        path: "flow[0].routes[1].flow[0]",
+        moduleId: 2,
+        before: "flow[0].routes[0].flow[0]",
+        after: "flow[0].routes[1].flow[0]",
+      }],
+    });
+  });
+
+  test("reports an unambiguous null-ID module leaf with null ownership", () => {
+    const before = {
+      name: "Null handler",
+      flow: [{
+        id: 1,
+        module: "http:ActionSendData",
+        onerror: [{ id: null, module: "builtin:Ignore", mapper: { value: "before" } }],
+      }],
+    } as Blueprint;
+    const after = structuredClone(before);
+    after.flow[0].onerror![0].mapper.value = "after";
+
+    expect(semanticDiff(before, after)).toEqual({
+      directlyModifiedModules: [],
+      ancestorModules: [1],
+      changes: [{
+        path: "flow[0].onerror[0].mapper.value",
+        moduleId: null,
+        before: "before",
+        after: "after",
+      }],
+    });
+  });
 });
