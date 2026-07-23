@@ -26,6 +26,8 @@ interface BoundedResponseText {
 }
 
 const SENSITIVE_KEY = /(?:authorization|token|api[-_]?key|cookie|secret|password|credential)/i;
+const SENSITIVE_HEADER_LINE = /^(\s*(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*).*/i;
+const SENSITIVE_ASSIGNMENT = /(?:^|[\s,;{])(["']?(?:password|credentials?|secret|token|api[-_]?key)["']?\s*[:=]\s*)/i;
 
 function classifyStatus(status: number): Pick<ClassifiedApiError, "code" | "retryable"> {
   if (status === 401) return { code: "AUTH_INVALID", retryable: false };
@@ -103,15 +105,21 @@ function sanitizeProviderValue(value: unknown): unknown {
 
 function sanitizeProviderText(text: string): string {
   return text
-    .replace(
-      /(authorization\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n;,}\]]+)/gi,
-      "$1[REDACTED]",
-    )
-    .replace(/\b(Bearer|Token)\s+[^\s,;]+/gi, "$1 [REDACTED]")
-    .replace(
-      /(["']?(?:authorization|token|api[-_]?key|x[-_]?api[-_]?key|cookie|set-cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
-      "$1[REDACTED]",
-    );
+    .split(/\r?\n/)
+    .map(sanitizeProviderLine)
+    .join("\n");
+}
+
+function sanitizeProviderLine(line: string): string {
+  const header = line.match(SENSITIVE_HEADER_LINE);
+  if (header) return `${header[1]}[REDACTED]`;
+
+  const assignment = line.match(SENSITIVE_ASSIGNMENT);
+  if (assignment?.index !== undefined) {
+    return `${line.slice(0, assignment.index + assignment[0].length)}[REDACTED]`;
+  }
+
+  return line.replace(/\b(Bearer|Token)\s+[^\s,;]+/gi, "$1 [REDACTED]");
 }
 
 function valueAtPath(value: unknown, path: string): unknown {
