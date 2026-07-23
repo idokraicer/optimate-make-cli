@@ -26,8 +26,7 @@ interface BoundedResponseText {
 }
 
 const SENSITIVE_KEY = /(?:authorization|token|api[-_]?key|cookie|secret|password|credential)/i;
-const SENSITIVE_HEADER_LINE = /^(\s*(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*).*/i;
-const SENSITIVE_ASSIGNMENT = /(?:^|[\s,;{])(["']?(?:password|credentials?|secret|token|api[-_]?key)["']?\s*[:=]\s*)/i;
+const SENSITIVE_TEXT_ASSIGNMENT = /(^|[^A-Za-z0-9_-])["']?(?:authorization|proxy-authorization|x-api-key|api-key|apikey|cookie|set-cookie|password|credentials?|secret|token)["']?\s*[:=]/i;
 
 function classifyStatus(status: number): Pick<ClassifiedApiError, "code" | "retryable"> {
   if (status === 401) return { code: "AUTH_INVALID", retryable: false };
@@ -111,12 +110,10 @@ function sanitizeProviderText(text: string): string {
 }
 
 function sanitizeProviderLine(line: string): string {
-  const header = line.match(SENSITIVE_HEADER_LINE);
-  if (header) return `${header[1]}[REDACTED]`;
-
-  const assignment = line.match(SENSITIVE_ASSIGNMENT);
+  const assignment = line.match(SENSITIVE_TEXT_ASSIGNMENT);
   if (assignment?.index !== undefined) {
-    return `${line.slice(0, assignment.index + assignment[0].length)}[REDACTED]`;
+    const sensitiveKeyIndex = assignment.index + assignment[1].length;
+    return `${line.slice(0, sensitiveKeyIndex)}[REDACTED]`;
   }
 
   return line.replace(/\b(Bearer|Token)\s+[^\s,;]+/gi, "$1 [REDACTED]");

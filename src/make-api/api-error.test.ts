@@ -165,6 +165,32 @@ describe("classifyApiResponse", () => {
     expect(error.message).not.toContain("still-sensitive");
   });
 
+  test("finds the first sensitive assignment anywhere in a text line", async () => {
+    const secrets = [
+      "x-api-key-secret",
+      "prefixed-authorization-secret",
+      "quoted-authorization-secret",
+      "mixed-api-key-secret",
+      "mixed-following-directive",
+    ];
+    const response = new Response([
+      "Unaffected first line",
+      `request failed X-API-Key: ${secrets[0]}; trace=still-sensitive`,
+      `upstream error: Authorization: Basic ${secrets[1]}, next=still-sensitive`,
+      `provider payload: \"authorization\": Basic ${secrets[2]}, next=still-sensitive`,
+      `safe prefix then apiKey=${secrets[3]}, next=${secrets[4]}`,
+      "Unaffected final line",
+    ].join("\n"), { status: 500 });
+
+    const error = await classifyApiResponse(response);
+
+    expect(error.message).toContain("Unaffected first line");
+    expect(error.message).toContain("Unaffected final line");
+    expect(error.message).toContain("safe prefix then [REDACTED]");
+    for (const secret of secrets) expect(error.message).not.toContain(secret);
+    expect(error.message).not.toContain("still-sensitive");
+  });
+
   test("bounds non-JSON provider messages at 2,000 characters", async () => {
     const response = new Response("x".repeat(2_100), { status: 500 });
 
