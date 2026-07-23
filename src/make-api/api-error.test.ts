@@ -191,6 +191,29 @@ describe("classifyApiResponse", () => {
     expect(error.message).not.toContain("still-sensitive");
   });
 
+  test("fails closed for compound sensitive identifiers", async () => {
+    const fields = [
+      ["\"access_token\"", "access-token-secret"],
+      ["refresh-token", "refresh-token-secret"],
+      ["client_secret", "client-secret-secret"],
+      ["api_key", "api-key-secret"],
+      ["X_API_KEY", "x-api-key-secret"],
+      ["tenant_authorization_token_backup", "long-compound-secret"],
+    ] as const;
+    const response = new Response([
+      "Unaffected first line",
+      ...fields.map(([field, secret]) => `provider detail: ${field} = ${secret}; next=still-sensitive`),
+      "Unaffected final line",
+    ].join("\n"), { status: 500 });
+
+    const error = await classifyApiResponse(response);
+
+    expect(error.message).toContain("Unaffected first line");
+    expect(error.message).toContain("Unaffected final line");
+    for (const [, secret] of fields) expect(error.message).not.toContain(secret);
+    expect(error.message).not.toContain("still-sensitive");
+  });
+
   test("bounds non-JSON provider messages at 2,000 characters", async () => {
     const response = new Response("x".repeat(2_100), { status: 500 });
 
