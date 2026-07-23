@@ -50,8 +50,32 @@ export function registerCleanupCommand(program: Command, dependencies: CleanupDe
         const client = await dependencies.resolveClient(parsed.scenarioId, parsed.baseUrl, parsed.teamId);
         const details = await client.fetchScenarioDetails(parsed.scenarioId);
         const baseUrl = normalizeBaseUrl(parsed.baseUrl ?? client.getBaseUrl());
-        const owned = dependencies.ownership.get(baseUrl, parsed.scenarioId);
+        let owned = dependencies.ownership.get(baseUrl, parsed.scenarioId);
         const organizationId = await dependencies.resolveOrganizationId(client, details.teamId);
+        if (!owned) {
+          const operationId = extractOwnedOperationId(details.name);
+          const intent = operationId
+            ? dependencies.ownership.getProbeIntent(baseUrl, operationId)
+            : null;
+          if (
+            operationId !== null
+            && intent
+            && intent.teamId === details.teamId
+            && intent.organizationId === organizationId
+            && normalizeBaseUrl(intent.baseUrl) === baseUrl
+            && !details.isActive
+            && !details.iswaiting
+          ) {
+            dependencies.ownership.assignProbeScenario(baseUrl, operationId, parsed.scenarioId);
+            const { blueprint: recoveredBlueprint } = await client.fetchBlueprint(parsed.scenarioId);
+            dependencies.ownership.update(baseUrl, parsed.scenarioId, {
+              lifecycleState: "inactive",
+              lastVerifiedFingerprint: await fingerprintBlueprint(recoveredBlueprint),
+              remoteVerifiedAt: new Date().toISOString(),
+            });
+            owned = dependencies.ownership.get(baseUrl, parsed.scenarioId);
+          }
+        }
         const reasons: string[] = [];
         if (!owned) reasons.push("No ownership record exists for this exact zone and scenario.");
         if (owned?.lifecycleState === "deleted") reasons.push("The ownership record is already deleted.");
@@ -162,6 +186,13 @@ function safeCleanupMessage(error: unknown): string {
 
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
+}
+
+function extractOwnedOperationId(name: string): string | null {
+  const match = name.match(
+    /\[([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\]\s*$/i,
+  );
+  return match?.[1] ?? null;
 }
 
 function renderCleanupStatus(status: { scenarioId: number; eligible: boolean; reasons: string[] }): string {

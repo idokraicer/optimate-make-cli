@@ -164,6 +164,7 @@ export function registerProbeCommand(
             source: "owned_probe_lifecycle",
             verifiedAt: new Date().toISOString(),
             pendingCleanup: safePending(dependencies.ownership),
+            pendingRecovery: safeRecovery(dependencies.ownership),
           },
         });
         process.exitCode = cleanupFailure ? 5 : 1;
@@ -230,12 +231,21 @@ function probeMeta(
     rateLimit: client.getRateLimitSnapshot(),
     pendingCleanup: safePending(dependencies.ownership)
       .filter((record) => record.scenarioId !== excludeScenarioId),
+    pendingRecovery: safeRecovery(dependencies.ownership),
   };
 }
 
 function safePending(ownership: Pick<OwnershipStore, "listPending">) {
   try {
     return sanitizeForIndex(ownership.listPending()) as ReturnType<OwnershipStore["listPending"]>;
+  } catch {
+    return [];
+  }
+}
+
+function safeRecovery(ownership: Pick<OwnershipStore, "listProbeIntents">) {
+  try {
+    return sanitizeForIndex(ownership.listProbeIntents());
   } catch {
     return [];
   }

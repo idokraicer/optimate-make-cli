@@ -624,6 +624,11 @@ export class MakeApiClient {
     if (!input.confirmed) {
       throw new Error("Scenario creation requires explicit confirmation.");
     }
+    if (input.signal?.aborted) {
+      throw input.signal.reason instanceof DOMException
+        ? input.signal.reason
+        : new DOMException("Scenario creation was cancelled.", "AbortError");
+    }
     const marker = operationMarker(input.blueprint.name);
     const body = {
       blueprint: JSON.stringify(input.blueprint),
@@ -651,7 +656,6 @@ export class MakeApiClient {
       {
         retryTransientResponses: false,
         networkRetrySafe: false,
-        signal: input.signal,
         reconcileMutation: reconcile,
       },
     );
