@@ -207,6 +207,35 @@ describe("semanticDiff", () => {
     });
   });
 
+  test("includes ancestors from both sides when a module moves between parent routers", () => {
+    const before = {
+      name: "Cross-parent move",
+      flow: [
+        {
+          id: 1,
+          module: "flow:Router",
+          routes: [{ flow: [{ id: 3, module: "http:ActionSendData", mapper: { value: "same" } }] }],
+        },
+        { id: 2, module: "flow:Router", routes: [{ flow: [] }] },
+      ],
+    } as Blueprint;
+    const after = structuredClone(before);
+    const [moved] = after.flow[0].routes![0].flow!;
+    after.flow[0].routes![0].flow = [];
+    after.flow[1].routes![0].flow = [moved];
+
+    expect(semanticDiff(before, after)).toEqual({
+      directlyModifiedModules: [3],
+      ancestorModules: [1, 2],
+      changes: [{
+        path: "flow[1].routes[0].flow[0]",
+        moduleId: 3,
+        before: "flow[0].routes[0].flow[0]",
+        after: "flow[1].routes[0].flow[0]",
+      }],
+    });
+  });
+
   test("reports an unambiguous null-ID module leaf with null ownership", () => {
     const before = {
       name: "Null handler",
