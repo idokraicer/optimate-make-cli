@@ -2,7 +2,16 @@ import { dirname } from "node:path";
 import type { Blueprint } from "../make-api/types";
 
 const REDACTED = "[REDACTED]";
-const SENSITIVE_KEY = /(?:token|secret|password|authorization|api[-_]?key|cookie|credential)/i;
+const SENSITIVE_NAME_PARTS = [
+  "token",
+  "secret",
+  "password",
+  "authorization",
+  "apikey",
+  "cookie",
+  "credential",
+  "session",
+] as const;
 const SNIPPET_CONTEXT = 75;
 
 export interface SearchMatch {
@@ -92,24 +101,19 @@ export function sanitizeForIndex(value: unknown): unknown {
 
   return Object.fromEntries(Object.entries(record).map(([key, child]) => [
     key,
-    SENSITIVE_KEY.test(key) || (sensitivePair && /^(?:value|values|content|defaultValue)$/i.test(key))
+    isSensitiveName(key) || (sensitivePair && /^(?:value|values|content|defaultValue)$/i.test(key))
       ? REDACTED
       : sanitizeForIndex(child),
   ]));
 }
 
 function sensitivePairName(value: string): boolean {
+  return isSensitiveName(value);
+}
+
+function isSensitiveName(value: string): boolean {
   const normalized = value.toLocaleLowerCase().replace(/[^a-z0-9]/g, "");
-  return [
-    "authorization",
-    "cookie",
-    "setcookie",
-    "xapikey",
-    "apikey",
-    "xauthtoken",
-    "session",
-    "sessionid",
-  ].includes(normalized);
+  return SENSITIVE_NAME_PARTS.some((part) => normalized.includes(part));
 }
 
 function sanitizeSearchText(value: string): string {
@@ -345,10 +349,10 @@ async function readIndex(path: string): Promise<SearchIndexFile | null> {
 }
 
 function sanitizeCachedEntry(entry: SearchEntry): SearchEntry {
-  const sensitivePath = entry.path.split(/[.[\]]+/).some((segment) => SENSITIVE_KEY.test(segment));
+  const sensitivePath = entry.path.split(/[.[\]]+/).some(isSensitiveName);
   return {
     ...entry,
-    value: sensitivePath || (entry.key !== null && SENSITIVE_KEY.test(entry.key))
+    value: sensitivePath || (entry.key !== null && isSensitiveName(entry.key))
       ? REDACTED
       : sanitizeSearchText(entry.value),
   };

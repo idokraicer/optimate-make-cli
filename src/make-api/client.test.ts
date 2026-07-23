@@ -87,7 +87,55 @@ describe("MakeApiClient", () => {
 
     const result = await client.listAllScenarios({ organizationId: 9 });
     expect(result.scenarios).toHaveLength(1000);
-    expect(result).toMatchObject({ complete: false, failedOffset: 1000 });
+    expect(result).toMatchObject({
+      complete: false,
+      failedOffset: 1000,
+      failure: { code: "TRANSIENT", httpStatus: 503, retryable: true },
+    });
+  });
+
+  test("rethrows a capability failure before any scenario page succeeds", async () => {
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async (url) => String(url).endsWith("/api/v2/organizations/9")
+          ? Response.json({ organization: { id: 9, license: { apiLimit: 60 } } })
+          : new Response("forbidden", { status: 403 }),
+      },
+    });
+
+    expect(client.listAllScenarios({ organizationId: 9 })).rejects.toThrow(
+      "Make API list scenarios error 403",
+    );
+  });
+
+  test("later-page capability failures retain partial results with explicit safe semantics", async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, index) => ({ id: index + 1 }));
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async (url) => {
+          const value = String(url);
+          if (value.endsWith("/api/v2/organizations/9")) {
+            return Response.json({ organization: { id: 9, license: { apiLimit: 60 } } });
+          }
+          return Number(new URL(value).searchParams.get("pg[offset]")) === 0
+            ? Response.json({ scenarios: firstPage })
+            : new Response("private provider body", { status: 403 });
+        },
+      },
+    });
+
+    const result = await client.listAllScenarios({ organizationId: 9 });
+    expect(result.scenarios).toHaveLength(1000);
+    expect(result).toMatchObject({
+      complete: false,
+      failedOffset: 1000,
+      failure: { code: "SCOPE_MISSING", httpStatus: 403, retryable: false },
+    });
+    expect(JSON.stringify(result)).not.toContain("private provider body");
   });
 
   test("configured organization IDs still load details unless details or a valid rate cache exist", async () => {
