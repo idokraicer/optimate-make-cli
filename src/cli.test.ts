@@ -35,6 +35,21 @@ describe("CLI commands", () => {
     expect(stdout).toContain("--scenario");
     expect(stdout).toContain("Push a local blueprint");
   });
+
+  test("executions exposes agent-friendly time and compact output options", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "executions", "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).toContain("--limit");
+    expect(stdout).toContain("--from");
+    expect(stdout).toContain("--to");
+    expect(stdout).toContain("--since");
+    expect(stdout).toContain("--compact");
+    expect(stdout).toContain("--output");
+    expect(stdout).toContain("--include-input");
+  });
   test("CLI has notes command", async () => {
     const proc = Bun.spawn(["bun", "src/cli.ts", "notes", "--help"], {
       stdout: "pipe",

@@ -73,7 +73,7 @@ All commands accept `-s <id-or-url>` to specify a scenario. URLs auto-detect the
 | `orgs` | List all organizations the token can access | `--search <term>`, `--base-url <url>`, `--json` |
 | `teams` | List teams within an organization | `-o <orgId>` / `--from-url <url>`, `--search <term>`, `--json` |
 | `scenarios` | List scenarios for a team or organization | `-t <teamId>` / `-o <orgId>` / `--from-url <any-make-url>`, `--active`, `--folder`, `--search <term>`, `--limit`, `--json` |
-| `executions` | List recent executions for a scenario (or fetch one) | `-s <id-or-url>`, `--id <executionId>` (full detail), `--failed`, `--status success\|incomplete\|error\|failed`, `--limit`, `--from <ts>`, `--to <ts>`, `--json` |
+| `executions` | List recent executions for a scenario (or fetch one) | `-s <id-or-url>`, `--id <rawExecutionId>`, `--include-input` (retained webhook request when safely matched), `--failed`, `--status success\|incomplete\|error\|failed`, `--limit`, `--from <date>`, `--to <date>`, `--since 30m\|2h\|7d\|1mo`, `--json`, `--compact`, `--output <file>` |
 | `failures` | Scan an entire team/org for recently failed executions | `-t <teamId>` / `-o <orgId>` / `--from-url <url>`, `--since 1h\|24h\|7d\|30d`, `--limit <n>` (per scenario), `--include-paused`, `--json` |
 
 ### Useful patterns
@@ -106,12 +106,22 @@ make-fixer scenarios -o <ORG_ID> --search "webhook"   # filter by name (case-ins
 # Recent executions for a scenario + drill into one
 make-fixer executions -s "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit" --limit 10
 make-fixer executions -s <SCENARIO_ID> --failed              # only non-success runs
-make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID>   # full JSON for one run
+make-fixer executions -s <SCENARIO_ID> --since 2h --compact  # stable token-efficient JSON for agents
+make-fixer executions -s <SCENARIO_ID> --since 2h --json --output executions.json | jq '.[] | .imtId'
+make-fixer executions -s <SCENARIO_ID> --from 2026-07-15T09:00:00+03:00 --to 2026-07-15T10:00:00+03:00
+make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID>   # public result: status + configured outputs/error
+make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID> --include-input --output execution.json | jq '.input'
 
 # Org/team-wide failure sweep (use this when the user asks "what's broken?")
 make-fixer failures --from-url "https://<zone>.make.com/organization/<ORG_ID>/dashboard" --since 24h
 make-fixer failures --from-url "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit" --since 7d
 ```
+
+`--id` uses Make's public execution endpoint, which normally returns status plus configured
+scenario outputs or an error—not every module input/output bundle from the Make inspector.
+For webhook-triggered scenarios, `--include-input` uses the Make API token only and does not
+require a browser session. It adds retained webhook request/parsed data when a timestamp match
+is safe; otherwise `input` is `null` and `inputAvailability.reason` explains why.
 
 ### Status codes are confusing — read this before reasoning about errors
 

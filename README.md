@@ -67,6 +67,26 @@ make-fixer modules <app-name>
 
 # View scenario notes
 make-fixer notes <scenario-id>
+
+# Fetch recent execution metadata in compact agent-friendly JSON
+make-fixer executions -s <scenario-id> --since 2h --limit 20 --compact
+
+# Save raw JSON and pipe the identical stdout payload to jq
+make-fixer executions -s <scenario-id> --since 2h --json \
+  --output artifacts/executions.json | jq '.[] | {imtId, status, timestamp}'
+
+# Fetch executions between exact ISO 8601 timestamps
+make-fixer executions -s <scenario-id> \
+  --from 2026-07-15T09:00:00+03:00 \
+  --to 2026-07-15T10:00:00+03:00 \
+  --json
+
+# Fetch one execution result
+make-fixer executions -s <scenario-id> --id <execution-id>
+
+# Include webhook request data when a matching retained webhook log is available
+make-fixer executions -s <scenario-id> --id <execution-id> \
+  --include-input --output artifacts/execution.json | jq '.input'
 ```
 
 ## Commands
@@ -83,7 +103,36 @@ make-fixer notes <scenario-id>
 | `modules` | List module types for an app |
 | `notes` | List or create scenario notes |
 | `resume` | Build a 429-retry resume module |
+| `executions` | List/filter executions or fetch one execution result |
+| `failures` | Scan a team or organization for failed executions |
 | `update` | Update make-fixer to the latest version |
+
+### Execution queries
+
+`executions` supports `--limit`, `--failed`, `--status`, `--from`, `--to`,
+`--since`, and `--output <file>`. `--from` and `--to` accept ISO 8601 values
+with a timezone or epoch milliseconds. `--since` accepts compact durations
+such as `30m`, `2h`, `7d`, and `1mo`.
+
+Use `--json` when you need the untouched Make API rows. Use `--compact` for a
+stable, token-efficient object containing the raw execution ID, numeric `imtId`,
+status, timestamp, operations, duration, and run name. Then use
+`--id <execution-id>` to retrieve
+the public execution result for the run you want to inspect. That endpoint
+normally contains status plus configured scenario outputs or an error, not all
+module input/output bundles.
+
+For webhook-triggered scenarios, add `--include-input` in single-execution mode.
+The command uses only the Make API token to retrieve the retained webhook request
+and parsed body. Because Make does not document an execution-ID link on webhook
+logs, the JSON includes timestamp-match provenance. If the closest match is
+ambiguous, missing, expired, or the scenario has no webhook, `input` is `null`
+and `inputAvailability.reason` explains why. Make documents webhook log retention
+as 3 days normally and 30 days on Enterprise plans.
+
+`--output` creates parent directories and writes the same JSON payload emitted
+on stdout. Combine it with `--json` or `--compact` to save an artifact while
+continuing to pipe stdout through `jq` or another command.
 
 ## Staying up to date
 

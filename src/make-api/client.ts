@@ -32,6 +32,28 @@ export class MakeApiClient {
     return `${this.baseUrl}/api/v2/scenarios/${scenarioId}`;
   }
 
+  getExecutionLogUrl(scenarioId: number, executionId: string): string {
+    return `${this.baseUrl}/api/v2/scenarios/${scenarioId}/logs/${encodeURIComponent(executionId)}`;
+  }
+
+  getHookLogsUrl(hookId: number | string, opts?: {
+    from?: string;
+    to?: string;
+    limit?: number;
+    sortDir?: "asc" | "desc";
+  }): string {
+    const params = new URLSearchParams();
+    if (opts?.from) params.set("from", opts.from);
+    if (opts?.to) params.set("to", opts.to);
+    params.set("pg[limit]", String(opts?.limit ?? 100));
+    params.set("pg[sortDir]", opts?.sortDir ?? "desc");
+    return `${this.baseUrl}/api/v2/hooks/${encodeURIComponent(String(hookId))}/logs?${params.toString()}`;
+  }
+
+  getHookLogUrl(hookId: number | string, hookLogId: string): string {
+    return `${this.baseUrl}/api/v2/hooks/${encodeURIComponent(String(hookId))}/logs/${encodeURIComponent(hookLogId)}`;
+  }
+
   /**
    * Build the human-facing scenario editor URL.
    * NOTE: the path segment is the TEAM id, NOT the org id — using an org id
@@ -245,6 +267,38 @@ export class MakeApiClient {
       throw new Error(`Make API fetch execution error ${res.status}: ${await res.text()}`);
     }
     return await res.json();
+  }
+
+  async fetchExecutionLog(scenarioId: number, executionId: string): Promise<any> {
+    const res = await this.fetchWithBackoff(this.getExecutionLogUrl(scenarioId, executionId));
+    if (!res.ok) {
+      throw new Error(`Make API fetch execution log error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return data.scenarioLog ?? data;
+  }
+
+  async listHookLogs(hookId: number | string, opts?: {
+    from?: string;
+    to?: string;
+    limit?: number;
+    sortDir?: "asc" | "desc";
+  }): Promise<any[]> {
+    const res = await this.fetchWithBackoff(this.getHookLogsUrl(hookId, opts));
+    if (!res.ok) {
+      throw new Error(`Make API list webhook logs error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return Array.isArray(data.hookLogs) ? data.hookLogs : [];
+  }
+
+  async fetchHookLog(hookId: number | string, hookLogId: string): Promise<any> {
+    const res = await this.fetchWithBackoff(this.getHookLogUrl(hookId, hookLogId));
+    if (!res.ok) {
+      throw new Error(`Make API fetch webhook log error ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    return data.hookLog ?? data;
   }
 
   async searchApps(query: string, apps?: MakeApp[]): Promise<MakeApp[]> {

@@ -44,6 +44,27 @@ describe("MakeApiClient", () => {
     );
   });
 
+  test("constructs execution and webhook log URLs", () => {
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+    });
+
+    expect(client.getExecutionLogUrl(123, "execution/id")).toBe(
+      "https://eu1.make.com/api/v2/scenarios/123/logs/execution%2Fid",
+    );
+    expect(client.getHookLogsUrl(456, {
+      from: "1784102400000",
+      to: "1784102520000",
+      limit: 100,
+    })).toBe(
+      "https://eu1.make.com/api/v2/hooks/456/logs?from=1784102400000&to=1784102520000&pg%5Blimit%5D=100&pg%5BsortDir%5D=desc",
+    );
+    expect(client.getHookLogUrl(456, "hook/log")).toBe(
+      "https://eu1.make.com/api/v2/hooks/456/logs/hook%2Flog",
+    );
+  });
+
   test("createNote method exists and is callable", () => {
     const client = new MakeApiClient({
       token: "test-token",

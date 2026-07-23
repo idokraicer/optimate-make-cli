@@ -13,6 +13,13 @@ import { diffBlueprints } from "./agent/blueprint-editor";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
+import {
+  compactExecution,
+  parseDuration,
+  resolveExecutionTimeWindow,
+  selectWebhookInputLog,
+  writeJsonOutput,
+} from "./utils/execution-query";
 import { checkForUpdate, forceUpdate } from "./updater";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +63,7 @@ Common workflows:
   make-fixer analyze -s <id> --local                     Quality report from local file
   make-fixer fix -s <url> --dry-run                      Preview auto-fixes
   make-fixer executions -s <url> --failed                Recent failed runs for a scenario
-  make-fixer executions -s <url> --id <executionId>      Full JSON for a single execution
+  make-fixer executions -s <url> --id <executionId>      Public result for a single execution
   make-fixer failures --from-url <any-make-url>          Org/team-wide scan for failed runs
 `,
   );
@@ -655,25 +662,157 @@ Examples:
   );
 
 // --- executions command ---
+async function fetchExecutionWithWebhookInput(
+  client: MakeApiClient,
+  scenarioId: number,
+  executionId: string,
+  execution: any,
+): Promise<any> {
+  const basePayload = {
+    executionId,
+    execution,
+    executionLog: null as any,
+    input: null as any,
+  };
+
+  try {
+    const [scenario, executionLog] = await Promise.all([
+      client.fetchScenario(scenarioId),
+      client.fetchExecutionLog(scenarioId, executionId),
+    ]);
+    basePayload.executionLog = executionLog;
+
+    const hookId = scenario.hookId;
+    if (hookId == null) {
+      return {
+        ...basePayload,
+        inputAvailability: {
+          available: false,
+          reason: "scenario_has_no_webhook",
+        },
+      };
+    }
+
+    const timestamp = executionLog.timestamp ?? executionLog.executionTime;
+    const executionTime = typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
+    if (Number.isNaN(executionTime)) {
+      return {
+        ...basePayload,
+        inputAvailability: {
+          available: false,
+          reason: "execution_timestamp_unavailable",
+          hookId,
+        },
+      };
+    }
+
+    const matchWindowMs = 120_000;
+    const hookLogs = await client.listHookLogs(hookId, {
+      from: String(executionTime - matchWindowMs),
+      to: String(executionTime + matchWindowMs),
+      limit: 100,
+    });
+    const selection = selectWebhookInputLog(hookLogs, timestamp, { maxDistanceMs: matchWindowMs });
+
+    if (!selection.match) {
+      return {
+        ...basePayload,
+        inputAvailability: {
+          available: false,
+          reason: selection.reason === "ambiguous"
+            ? "ambiguous_webhook_match"
+            : "webhook_log_not_found",
+          hookId,
+          candidateLogIds: selection.candidateLogIds,
+          note: "Webhook logs have limited retention and no documented execution ID linkage.",
+        },
+      };
+    }
+
+    const hookLog = await client.fetchHookLog(hookId, String(selection.match.id));
+    return {
+      ...basePayload,
+      input: {
+        source: "webhook_log",
+        hookId,
+        hookLogId: String(selection.match.id),
+        loggedAt: hookLog.loggedAt ?? selection.match.loggedAt ?? null,
+        match: {
+          method: "nearest_timestamp",
+          differenceMs: selection.differenceMs,
+        },
+        request: hookLog.data?.request ?? null,
+        parsed: hookLog.data?.parsed ?? null,
+      },
+      inputAvailability: {
+        available: true,
+        hookId,
+        hookLogId: String(selection.match.id),
+        retentionDays: hookLog.logRetentionDays ?? null,
+      },
+    };
+  } catch (error) {
+    return {
+      ...basePayload,
+      inputAvailability: {
+        available: false,
+        reason: "webhook_lookup_failed",
+        detail: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
 program
   .command("executions")
   .description("List recent executions for a scenario, or fetch one by ID")
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
-  .option("--id <executionId>", "Fetch a single execution by ID (returns full detail)")
+  .option("--id <executionId>", "Fetch a single execution result by raw ID")
+  .option("--include-input", "Include webhook request data when a matching webhook log is available (requires --id)")
   .option("--limit <n>", "Max executions to list", toInt, 20)
   .option("--status <s>", "Filter: success (1) | incomplete (2, Make UI calls these 'errors') | error (3, rare fatal) | failed (any non-success)")
   .option("--failed", "Shortcut for --status failed (anything that isn't a success)")
-  .option("--from <ts>", "Start timestamp (ms)")
-  .option("--to <ts>", "End timestamp (ms)")
+  .option("--from <date>", "Start time: ISO 8601 or epoch milliseconds")
+  .option("--to <date>", "End time: ISO 8601 or epoch milliseconds")
+  .option("--since <duration>", "Relative window ending now: 30m, 2h, 7d, 1mo")
   .option("--json", "Output as JSON")
+  .option("--compact", "Output stable, token-efficient JSON fields (list mode)")
+  .option("--output <file>", "Also write the JSON payload to a file (stdout remains available)")
   .action(async (opts) => {
     const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
     const client = await resolveClient(scenarioId, baseUrl);
 
     if (opts.id) {
+      if (opts.from || opts.to || opts.since) {
+        console.error("Error: --from, --to, and --since only apply when listing executions, not with --id.");
+        process.exit(1);
+      }
       const execution = await client.fetchExecution(scenarioId, opts.id);
-      console.log(JSON.stringify(execution, null, 2));
+      const payload = opts.includeInput
+        ? await fetchExecutionWithWebhookInput(client, scenarioId, opts.id, execution)
+        : execution;
+      const json = await writeJsonOutput(payload, opts.output);
+      if (opts.output) console.error(`Saved execution JSON to ${opts.output}`);
+      console.log(json);
       return;
+    }
+
+    if (opts.includeInput) {
+      console.error("Error: --include-input requires --id because webhook input is matched to one execution.");
+      process.exit(1);
+    }
+
+    if (!Number.isInteger(opts.limit) || opts.limit <= 0) {
+      console.error("Error: --limit must be a positive integer.");
+      process.exit(1);
+    }
+
+    let timeWindow: { from?: string; to?: string };
+    try {
+      timeWindow = resolveExecutionTimeWindow(opts);
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
     }
 
     const statusMap: Record<string, 1 | 2 | 3> = {
@@ -691,14 +830,28 @@ program
     let executions = await client.listExecutions(scenarioId, {
       limit: opts.limit,
       status,
-      from: opts.from,
-      to: opts.to,
+      from: timeWindow.from,
+      to: timeWindow.to,
     });
     if (wantFailed) executions = executions.filter((e) => e.status !== 1);
 
-    if (opts.json) {
-      console.log(JSON.stringify(executions, null, 2));
-      return;
+    const outputPayload = opts.compact
+      ? {
+        scenarioId,
+        count: executions.length,
+        from: timeWindow.from ?? null,
+        to: timeWindow.to ?? null,
+        executions: executions.map(compactExecution),
+      }
+      : executions;
+
+    if (opts.output || opts.compact || opts.json) {
+      const json = await writeJsonOutput(outputPayload, opts.output);
+      if (opts.output) console.error(`Saved execution JSON to ${opts.output}`);
+      if (opts.compact || opts.json) {
+        console.log(json);
+        return;
+      }
     }
 
     if (executions.length === 0) {
@@ -709,7 +862,7 @@ program
     const statusLabel = (s: number) => (s === 1 ? "OK" : s === 2 ? "FAIL" : s === 3 ? "ERR!" : String(s ?? "?"));
     console.log(`\n${executions.length} execution(s) for scenario ${scenarioId}:\n`);
     for (const e of executions) {
-      const id = e.imtId ?? e.id ?? "?";
+      const id = e.id ?? e.imtId ?? "?";
       const st = statusLabel(e.status);
       const ts = e.timestamp ?? e.executionTime ?? "";
       const ops = e.operations != null ? `${e.operations} ops` : "";
@@ -729,14 +882,19 @@ Make.com's status codes are confusing: the UI labels status=2 runs as errors, bu
 documents 2 as "warning". In practice, --status incomplete (or --failed) is what catches
 the failures you actually care about. --status error (3) almost never matches.
 
-The executionId column is what you pass to \`--id\` to retrieve the full execution JSON
-(module-level inputs/outputs, error details, bundle data).
+The executionId column is the raw ID accepted by \`--id\`. Make's public execution endpoint
+returns status plus configured scenario outputs or an error when available; it does not expose
+all module bundles. Add \`--include-input\` to retrieve webhook request data when a webhook log
+can be matched safely. The output includes match provenance and an availability reason.
 
 Examples:
   make-fixer executions -s "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
   make-fixer executions -s <SCENARIO_ID> --failed --limit 50          # all non-success runs
   make-fixer executions -s <SCENARIO_ID> --status incomplete           # status=2 only
-  make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID>
+  make-fixer executions -s <SCENARIO_ID> --since 2h --compact           # compact agent-friendly JSON
+  make-fixer executions -s <SCENARIO_ID> --since 2h --json --output executions.json | jq '.[] | .imtId'
+  make-fixer executions -s <SCENARIO_ID> --from 2026-07-15T09:00:00+03:00 --to 2026-07-15T10:00:00+03:00
+  make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID> --include-input | jq '.input'
   make-fixer executions -s <SCENARIO_ID> --from <FROM_MS> --to <TO_MS> --json
 `,
   );
@@ -772,7 +930,7 @@ program
 
     const sinceMs = parseDuration(opts.since);
     if (sinceMs == null) {
-      console.error(`Error: --since must look like 1h, 24h, 7d, or 30d. Got: ${opts.since}`);
+      console.error(`Error: --since must look like 30m, 1h, 7d, or 1mo. Got: ${opts.since}`);
       process.exit(1);
     }
     const fromTs = String(Date.now() - sinceMs);
@@ -871,20 +1029,6 @@ Drill into a specific scenario's failures:
   make-fixer executions -s <SCENARIO_ID> --failed
 `,
   );
-
-function parseDuration(input: string): number | null {
-  const m = input.match(/^(\d+)\s*([hdwm])$/i);
-  if (!m) return null;
-  const n = parseInt(m[1], 10);
-  const unit = m[2].toLowerCase();
-  const mult: Record<string, number> = {
-    h: 3600_000,
-    d: 86_400_000,
-    w: 7 * 86_400_000,
-    m: 30 * 86_400_000,
-  };
-  return n * mult[unit];
-}
 
 // --- helpers ---
 
