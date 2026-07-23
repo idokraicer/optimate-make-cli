@@ -119,6 +119,62 @@ describe("SharedRateLimiter", () => {
     second.close();
   });
 
+  test("aborting after a reservation begins waiting prevents it from being granted", async () => {
+    const dbPath = temporaryDatabasePath();
+    let notifySleeping!: () => void;
+    const sleeping = new Promise<void>((resolve) => {
+      notifySleeping = resolve;
+    });
+    const limiter = new SharedRateLimiter({
+      dbPath,
+      now: () => 0,
+      sleep: async () => {
+        notifySleeping();
+        await new Promise<void>(() => undefined);
+      },
+      random: () => 0,
+    });
+    await limiter.reserve(bucket, 1);
+    const controller = new AbortController();
+
+    const queued = limiter.reserve(bucket, 1, controller.signal);
+    await sleeping;
+    controller.abort();
+
+    await expect(queued).rejects.toHaveProperty("name", "AbortError");
+    expect(limiter.getSnapshot(bucket).requestsSent).toBe(1);
+    limiter.close();
+  });
+
+  test("aborting while waiting for a cross-process executor lease does not acquire it", async () => {
+    const dbPath = temporaryDatabasePath();
+    let notifySleeping!: () => void;
+    const sleeping = new Promise<void>((resolve) => {
+      notifySleeping = resolve;
+    });
+    const limiter = new SharedRateLimiter({
+      dbPath,
+      now: () => 0,
+      sleep: async () => {
+        notifySleeping();
+        await new Promise<void>(() => undefined);
+      },
+      random: () => 0,
+    });
+    const releaseFirst = await limiter.acquireExecutionLease(bucket);
+    const releaseSecond = await limiter.acquireExecutionLease(bucket);
+    const controller = new AbortController();
+
+    const queued = limiter.acquireExecutionLease(bucket, controller.signal);
+    await sleeping;
+    controller.abort();
+
+    await expect(queued).rejects.toHaveProperty("name", "AbortError");
+    releaseFirst();
+    releaseSecond();
+    limiter.close();
+  });
+
   test("stores a discovered organization limit for other processes to reuse", () => {
     const time = fakeTime(10_000);
     const dbPath = temporaryDatabasePath();

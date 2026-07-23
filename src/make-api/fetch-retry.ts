@@ -30,22 +30,13 @@ export async function fetchWithRetry(
   opts?: FetchRetryOptions,
 ): Promise<Response> {
   const coordinator = opts?.coordinator ?? getDefaultRequestCoordinator();
-  const request = url instanceof Request ? new Request(url, init) : null;
-  const requestUrl = request?.url ?? url;
-  const requestInit: RequestInit = request
-    ? {
-        method: request.method,
-        headers: request.headers,
-        body: ["GET", "HEAD"].includes(request.method)
-          ? undefined
-          : await request.clone().arrayBuffer(),
-        signal: request.signal,
-      }
-    : (init ?? {});
+  const request = url instanceof Request ? url : null;
+  const requestUrl = request ?? url;
+  const requestInit: RequestInit = init ?? {};
 
   return coordinator.request(requestUrl, requestInit, {
     bucket: {
-      zone: zoneFromUrl(String(requestUrl)),
+      zone: zoneFromUrl(request instanceof Request ? request.url : String(requestUrl)),
       organizationId: "unknown",
     },
     maxRetries: opts?.maxRetries,

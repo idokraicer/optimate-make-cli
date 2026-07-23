@@ -1,13 +1,27 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   RequestCoordinator,
   type RequestContext,
   type RequestExecutor,
   type RateLimiterStore,
 } from "./request-coordinator";
-import type { RateBucket, RateLimitSnapshot } from "./rate-limiter";
+import {
+  SharedRateLimiter,
+  type RateBucket,
+  type RateLimitSnapshot,
+} from "./rate-limiter";
 
 const bucket: RateBucket = { zone: "eu1", organizationId: 8430514 };
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function fakeTime(start = 0) {
   let now = start;
@@ -27,6 +41,8 @@ function fakeLimiter() {
   const cooldowns: number[] = [];
   let retries = 0;
   let exemptRequests = 0;
+  let leaseReleases = 0;
+  const limits: Array<{ bucket: RateBucket; rpm: number }> = [];
   const snapshot: RateLimitSnapshot = {
     documentedRpm: null,
     effectiveRpm: 30,
@@ -49,8 +65,22 @@ function fakeLimiter() {
     recordExemptRequest: () => {
       exemptRequests++;
     },
+    setOrganizationLimit: (limitedBucket, rpm) => {
+      limits.push({ bucket: limitedBucket, rpm });
+    },
+    acquireExecutionLease: async () => () => {
+      leaseReleases++;
+    },
   };
-  return { limiter, reservations, cooldowns, get retries() { return retries; }, get exemptRequests() { return exemptRequests; } };
+  return {
+    limiter,
+    reservations,
+    cooldowns,
+    limits,
+    get retries() { return retries; },
+    get exemptRequests() { return exemptRequests; },
+    get leaseReleases() { return leaseReleases; },
+  };
 }
 
 function context(overrides: Partial<RequestContext> = {}): RequestContext {
@@ -131,7 +161,7 @@ describe("RequestCoordinator", () => {
     expect(time.sleeps).toEqual([500, 1_000]);
   });
 
-  test("deduplicates identical in-flight GETs and returns independently readable responses", async () => {
+  test("deduplicates identical in-flight GETs for the same credential and bucket", async () => {
     const rate = fakeLimiter();
     let calls = 0;
     let release!: () => void;
@@ -147,12 +177,12 @@ describe("RequestCoordinator", () => {
 
     const first = coordinator.request(
       "https://eu1.make.com/api/v2/scenarios?teamId=1",
-      { headers: { Authorization: "Token first", Accept: "application/json" } },
+      { headers: { Authorization: "Token same", Accept: "application/json" } },
       context(),
     );
     const second = coordinator.request(
       "https://eu1.make.com/api/v2/scenarios?teamId=1",
-      { headers: { Authorization: "Token second", Accept: "application/json" } },
+      { headers: { Authorization: "Token same", Accept: "application/json" } },
       context(),
     );
     release();
@@ -163,7 +193,7 @@ describe("RequestCoordinator", () => {
     expect(await secondResponse.text()).toBe("shared");
   });
 
-  test("does not put a secret-bearing URL into an in-flight deduplication key", async () => {
+  test("never deduplicates across authorization, cookie, API-key identities, or organization buckets", async () => {
     const rate = fakeLimiter();
     let calls = 0;
     let release!: () => void;
@@ -179,20 +209,174 @@ describe("RequestCoordinator", () => {
       },
     });
 
-    const first = coordinator.request(
-      "https://eu1.make.com/api/v2/scenarios?access_token=query-secret",
-      {},
+    const firstToken = coordinator.request(
+      "https://eu1.make.com/api/v2/scenarios",
+      { headers: { Authorization: "Token first-secret" } },
       context(),
     );
-    const second = coordinator.request(
-      "https://eu1.make.com/api/v2/scenarios?access_token=query-secret",
-      {},
+    const secondToken = coordinator.request(
+      "https://eu1.make.com/api/v2/scenarios",
+      { headers: { Authorization: "Token second-secret" } },
+      context(),
+    );
+    const secondOrganization = coordinator.request(
+      "https://eu1.make.com/api/v2/scenarios",
+      { headers: { Authorization: "Token first-secret" } },
+      context({ bucket: { zone: "eu1", organizationId: 999 } }),
+    );
+    const firstCookie = coordinator.request(
+      "https://eu1.make.com/api/v2/teams",
+      { headers: { Cookie: "session=first-cookie-secret" } },
+      context(),
+    );
+    const secondCookie = coordinator.request(
+      "https://eu1.make.com/api/v2/teams",
+      { headers: { Cookie: "session=second-cookie-secret" } },
+      context(),
+    );
+    const firstApiKey = coordinator.request(
+      "https://eu1.make.com/api/v2/hooks",
+      { headers: { "X-API-Key": "first-api-key-secret" } },
+      context(),
+    );
+    const secondApiKey = coordinator.request(
+      "https://eu1.make.com/api/v2/hooks",
+      { headers: { "X-API-Key": "second-api-key-secret" } },
       context(),
     );
     release();
-    await Promise.all([first, second]);
+    await Promise.all([
+      firstToken,
+      secondToken,
+      secondOrganization,
+      firstCookie,
+      secondCookie,
+      firstApiKey,
+      secondApiKey,
+    ]);
 
+    expect(calls).toBe(7);
+  });
+
+  test("keeps dedup keys opaque for credentials and secrets in userinfo, paths, and arbitrary queries", async () => {
+    const rate = fakeLimiter();
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const coordinator = new RequestCoordinator({
+      limiter: rate.limiter,
+      request: async () => {
+        calls++;
+        await gate;
+        return new Response("ok");
+      },
+    });
+    const secretUrls = [
+      "https://user:userinfo-secret@eu1.make.com/api/v2/scenarios",
+      "https://eu1.make.com/api/path-secret/scenarios",
+      "https://eu1.make.com/api/v2/scenarios?arbitrary=query-secret",
+    ];
+    const requests = secretUrls.flatMap((url) => [
+      coordinator.request(url, { headers: { Authorization: "Token header-secret" } }, context()),
+      coordinator.request(url, { headers: { Authorization: "Token header-secret" } }, context()),
+    ]);
+    release();
+    await Promise.all(requests);
+
+    expect(calls).toBe(3);
+  });
+
+  test("one deduplicated caller can abort without failing a live follower", async () => {
+    const rate = fakeLimiter();
+    let calls = 0;
+    let notifyFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      notifyFirstStarted = resolve;
+    });
+    const firstController = new AbortController();
+    const coordinator = new RequestCoordinator({
+      limiter: rate.limiter,
+      request: async (_url, init) => {
+        calls++;
+        if (calls === 1) notifyFirstStarted();
+        if (init?.signal) {
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = () => reject(new DOMException("aborted", "AbortError"));
+            init.signal!.addEventListener("abort", onAbort, { once: true });
+            setTimeout(resolve, 0);
+          });
+        }
+        return new Response("ok");
+      },
+    });
+
+    const first = coordinator.request(
+      "https://eu1.make.com/api/v2/scenarios",
+      { headers: { Authorization: "Token same" } },
+      context({ signal: firstController.signal }),
+    );
+    const follower = coordinator.request(
+      "https://eu1.make.com/api/v2/scenarios",
+      { headers: { Authorization: "Token same" } },
+      context(),
+    );
+    await firstStarted;
+    firstController.abort();
+
+    await expect(first).rejects.toHaveProperty("name", "AbortError");
+    expect(await (await follower).text()).toBe("ok");
     expect(calls).toBe(2);
+  });
+
+  test("coordinates the max-two executor cap across coordinator instances sharing SQLite", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-inflight-"));
+    temporaryDirectories.push(directory);
+    const dbPath = join(directory, "rate.sqlite");
+    const leaseWaiters: Array<() => void> = [];
+    const limiterOptions = {
+      dbPath,
+      now: () => 0,
+      random: () => 0,
+      sleep: async () => {
+        await new Promise<void>((resolve) => leaseWaiters.push(resolve));
+      },
+    };
+    const firstLimiter = new SharedRateLimiter({ ...limiterOptions, pid: 101 });
+    const secondLimiter = new SharedRateLimiter({ ...limiterOptions, pid: 202 });
+    let active = 0;
+    let maxActive = 0;
+    const executorReleases: Array<() => void> = [];
+    const executor: RequestExecutor = async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => executorReleases.push(resolve));
+      active--;
+      return new Response("ok");
+    };
+    const firstCoordinator = new RequestCoordinator({ limiter: firstLimiter, request: executor });
+    const secondCoordinator = new RequestCoordinator({ limiter: secondLimiter, request: executor });
+
+    const requests = [
+      firstCoordinator.request("https://eu1.make.com/api/v2/scenarios/1", {}, context()),
+      secondCoordinator.request("https://eu1.make.com/api/v2/scenarios/2", {}, context()),
+      secondCoordinator.request("https://eu1.make.com/api/v2/scenarios/3", {}, context()),
+    ];
+    for (let tick = 0; tick < 8; tick++) await Promise.resolve();
+    expect(active).toBe(2);
+    expect(maxActive).toBe(2);
+
+    executorReleases.shift()!();
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+    leaseWaiters.shift()!();
+    for (let tick = 0; tick < 8; tick++) await Promise.resolve();
+    expect(maxActive).toBe(2);
+
+    while (executorReleases.length > 0) executorReleases.shift()!();
+    await Promise.all(requests);
+    firstLimiter.close();
+    secondLimiter.close();
   });
 
   test("does not automatically retry an ambiguous mutation network failure", async () => {
@@ -215,6 +399,7 @@ describe("RequestCoordinator", () => {
       context(),
     )).rejects.toThrow("connection reset");
     expect(calls).toBe(1);
+    expect(rate.leaseReleases).toBe(1);
   });
 
   test("retries a mutation network failure only after reconciliation proves it was not applied", async () => {

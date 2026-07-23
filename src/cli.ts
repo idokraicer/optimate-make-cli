@@ -118,8 +118,8 @@ program
   .description("Fetch a scenario blueprint and save it locally for editing")
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .action(async (opts) => {
-    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await resolveClient(scenarioId, baseUrl);
+    const { scenarioId, teamId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await resolveClient(scenarioId, baseUrl, teamId);
     console.log(`Fetching scenario ${scenarioId}...`);
 
     const { blueprint } = await client.fetchBlueprint(scenarioId);
@@ -142,14 +142,14 @@ program
   .option("--var <name>", "Filter data flow to a specific variable name")
   .option("--local", "Analyze the local file instead of fetching from API")
   .action(async (opts) => {
-    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
+    const { scenarioId, teamId, baseUrl } = parseScenarioInput(opts.scenario);
     let blueprint: Blueprint;
     let notes: any[] = [];
 
     if (opts.local) {
       blueprint = await readLocalBlueprint(scenarioId);
     } else {
-      const client = await resolveClient(scenarioId, baseUrl);
+      const client = await resolveClient(scenarioId, baseUrl, teamId);
       console.log(`Fetching scenario ${scenarioId}...`);
       const fetched = await client.fetchBlueprint(scenarioId);
       blueprint = fetched.blueprint;
@@ -178,8 +178,8 @@ program
   .option("--only <types>", "Only fix these issue types (comma-separated)")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
-    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await resolveClient(scenarioId, baseUrl);
+    const { scenarioId, teamId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await resolveClient(scenarioId, baseUrl, teamId);
     console.log(`Fetching scenario ${scenarioId}...`);
 
     const { blueprint } = await client.fetchBlueprint(scenarioId);
@@ -237,8 +237,8 @@ program
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
-    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await resolveClient(scenarioId, baseUrl);
+    const { scenarioId, teamId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await resolveClient(scenarioId, baseUrl, teamId);
     const local = await readLocalBlueprint(scenarioId);
 
     console.log(`Fetching remote scenario ${scenarioId}...`);
@@ -280,8 +280,8 @@ program
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .option("--yes", "Skip confirmation prompt")
   .action(async (opts) => {
-    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await resolveClient(scenarioId, baseUrl);
+    const { scenarioId, teamId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await resolveClient(scenarioId, baseUrl, teamId);
     const local = await readLocalBlueprint(scenarioId);
 
     if (!opts.yes) {
@@ -371,8 +371,8 @@ program
       process.exit(1);
     }
 
-    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await resolveClient(scenarioId, baseUrl);
+    const { scenarioId, teamId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await resolveClient(scenarioId, baseUrl, teamId);
 
     if (opts.add) {
       const moduleIds = opts.module.split(",").map((s: string) => parseInt(s.trim(), 10));
@@ -779,8 +779,8 @@ program
   .option("--compact", "Output stable, token-efficient JSON fields (list mode)")
   .option("--output <file>", "Also write the JSON payload to a file (stdout remains available)")
   .action(async (opts) => {
-    const { scenarioId, baseUrl } = parseScenarioInput(opts.scenario);
-    const client = await resolveClient(scenarioId, baseUrl);
+    const { scenarioId, teamId, baseUrl } = parseScenarioInput(opts.scenario);
+    const client = await resolveClient(scenarioId, baseUrl, teamId);
 
     if (opts.id) {
       if (opts.from || opts.to || opts.since) {
@@ -1118,9 +1118,18 @@ async function createClient(baseUrlOverride?: string): Promise<MakeApiClient> {
 async function resolveClient(
   scenarioId: number,
   baseUrlOverride?: string,
+  teamId?: number,
 ): Promise<MakeApiClient> {
   // If the user passed a full URL, trust the zone from it — no discovery.
-  if (baseUrlOverride) return createClient(baseUrlOverride);
+  if (baseUrlOverride) {
+    const client = await createClient(baseUrlOverride);
+    if (teamId != null) {
+      await client.discoverOrganizationForTeam(teamId);
+    } else {
+      await client.discoverOrganizationForScenario(scenarioId);
+    }
+    return client;
+  }
 
   const globalEnv = await loadGlobalEnv();
   const token = process.env.MAKE_API_TOKEN || globalEnv.MAKE_API_TOKEN;
@@ -1133,7 +1142,13 @@ async function resolveClient(
     process.env.MAKE_BASE_URL || globalEnv.MAKE_BASE_URL || "https://eu1.make.com";
 
   const baseUrl = await resolveZone(scenarioId, token, preferred);
-  return new MakeApiClient({ token, baseUrl });
+  const client = new MakeApiClient({ token, baseUrl });
+  if (teamId != null) {
+    await client.discoverOrganizationForTeam(teamId);
+  } else {
+    await client.discoverOrganizationForScenario(scenarioId);
+  }
+  return client;
 }
 
 async function resolveZone(
