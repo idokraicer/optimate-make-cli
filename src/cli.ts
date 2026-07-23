@@ -135,7 +135,7 @@ program
   });
 
 registerInspectCommand(program, {
-  resolveClient,
+  resolveClient: resolveClientOrThrow,
   parseScenarioInput: parseInspectScenarioInput,
   readLocalBlueprint: readInspectLocalBlueprint,
   cliVersion: pkg.version,
@@ -1076,7 +1076,7 @@ function parseMakeUrl(input: string): {
 
 function parseScenarioInput(input: string): { scenarioId: number; teamId?: number; baseUrl?: string } {
   const parsed = parseMakeUrl(input);
-  if (parsed.scenarioId != null && parsed.scenarioId > 0) {
+  if (parsed.scenarioId != null) {
     return { scenarioId: parsed.scenarioId, teamId: parsed.teamId, baseUrl: parsed.baseUrl };
   }
 
@@ -1095,7 +1095,7 @@ function parseInspectScenarioInput(input: unknown): { scenarioId: number; teamId
   }
 
   const parsed = parseMakeUrl(input);
-  if (parsed.scenarioId != null) {
+  if (parsed.scenarioId != null && parsed.scenarioId > 0) {
     return { scenarioId: parsed.scenarioId, teamId: parsed.teamId, baseUrl: parsed.baseUrl };
   }
 
@@ -1127,17 +1127,31 @@ async function loadGlobalEnv(): Promise<Record<string, string>> {
 }
 
 async function createClient(baseUrlOverride?: string): Promise<MakeApiClient> {
+  try {
+    return await createClientOrThrow(baseUrlOverride);
+  } catch (error) {
+    exitLegacyResolutionError(error);
+  }
+}
+
+async function createClientOrThrow(baseUrlOverride?: string): Promise<MakeApiClient> {
+  const { token, preferred } = await resolveCredentialsOrThrow();
+  return new MakeApiClient({ token, baseUrl: baseUrlOverride ?? preferred });
+}
+
+async function resolveCredentialsOrThrow(): Promise<{ token: string; preferred: string }> {
   const globalEnv = await loadGlobalEnv();
   const token = process.env.MAKE_API_TOKEN || globalEnv.MAKE_API_TOKEN;
-  const baseUrl = baseUrlOverride || process.env.MAKE_BASE_URL || globalEnv.MAKE_BASE_URL || "https://eu1.make.com";
-
   if (!token) {
-    console.error("Error: MAKE_API_TOKEN not found. Run: make-fixer login --token <your-token>");
-    console.error("This saves the token globally to ~/.make-fixer/.env — do NOT create a local .env file.");
-    process.exit(1);
+    throw new InspectInputError("Unable to inspect scenario.", [
+      "Error: MAKE_API_TOKEN not found. Run: make-fixer login --token <your-token>",
+      "This saves the token globally to ~/.make-fixer/.env — do NOT create a local .env file.",
+    ]);
   }
-
-  return new MakeApiClient({ token, baseUrl });
+  return {
+    token,
+    preferred: process.env.MAKE_BASE_URL || globalEnv.MAKE_BASE_URL || "https://eu1.make.com",
+  };
 }
 
 async function resolveClient(
@@ -1145,9 +1159,22 @@ async function resolveClient(
   baseUrlOverride?: string,
   teamId?: number,
 ): Promise<MakeApiClient> {
+  try {
+    return await resolveClientOrThrow(scenarioId, baseUrlOverride, teamId);
+  } catch (error) {
+    exitLegacyResolutionError(error);
+  }
+}
+
+async function resolveClientOrThrow(
+  scenarioId: number,
+  baseUrlOverride?: string,
+  teamId?: number,
+): Promise<MakeApiClient> {
+  const { token, preferred } = await resolveCredentialsOrThrow();
   // If the user passed a full URL, trust the zone from it — no discovery.
   if (baseUrlOverride) {
-    const client = await createClient(baseUrlOverride);
+    const client = new MakeApiClient({ token, baseUrl: baseUrlOverride });
     if (teamId != null) {
       await client.discoverOrganizationForTeam(teamId);
     } else {
@@ -1156,17 +1183,7 @@ async function resolveClient(
     return client;
   }
 
-  const globalEnv = await loadGlobalEnv();
-  const token = process.env.MAKE_API_TOKEN || globalEnv.MAKE_API_TOKEN;
-  if (!token) {
-    console.error("Error: MAKE_API_TOKEN not found. Run: make-fixer login --token <your-token>");
-    console.error("This saves the token globally to ~/.make-fixer/.env — do NOT create a local .env file.");
-    process.exit(1);
-  }
-  const preferred =
-    process.env.MAKE_BASE_URL || globalEnv.MAKE_BASE_URL || "https://eu1.make.com";
-
-  const baseUrl = await resolveZone(scenarioId, token, preferred);
+  const baseUrl = await resolveZoneOrThrow(scenarioId, token, preferred);
   const client = new MakeApiClient({ token, baseUrl });
   if (teamId != null) {
     await client.discoverOrganizationForTeam(teamId);
@@ -1176,7 +1193,18 @@ async function resolveClient(
   return client;
 }
 
-async function resolveZone(
+function exitLegacyResolutionError(error: unknown): never {
+  if (error instanceof InspectInputError && error.legacyDiagnostics.length > 0) {
+    for (const diagnostic of error.legacyDiagnostics) console.error(diagnostic);
+  } else if (error instanceof Error) {
+    console.error(`Error: ${error.message}`);
+  } else {
+    console.error("Error: Unable to resolve Make.com client.");
+  }
+  process.exit(1);
+}
+
+async function resolveZoneOrThrow(
   scenarioId: number,
   token: string,
   preferred: string,
@@ -1206,22 +1234,16 @@ async function resolveZone(
   }
 
   if (firstAuthError) {
-    console.error(
+    throw new InspectInputError("Unable to inspect scenario.", [
       `Error: Make API returned 401 Unauthorized for scenario ${scenarioId} in every zone tried (${KNOWN_ZONES.map(zoneLabel).join(", ")}).`,
-    );
-    console.error(
-      `Your token is likely invalid or scoped to a zone not in the known list. Re-run: make-fixer login --token <token> --base-url <your-zone-url>`,
-    );
-    process.exit(1);
+      "Your token is likely invalid or scoped to a zone not in the known list. Re-run: make-fixer login --token <token> --base-url <your-zone-url>",
+    ]);
   }
 
-  console.error(
+  throw new InspectInputError("Unable to inspect scenario.", [
     `Error: Scenario ${scenarioId} not found in any known zone (${KNOWN_ZONES.map(zoneLabel).join(", ")}).`,
-  );
-  console.error(
     `Pass the full Make.com URL instead of the bare ID (e.g. https://eu2.make.com/<team>/scenarios/${scenarioId}/edit) to skip discovery.`,
-  );
-  process.exit(1);
+  ]);
 }
 
 async function probeScenario(

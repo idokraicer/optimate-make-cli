@@ -11,7 +11,7 @@ import ifElseBlueprint from "../tests/fixtures/if-else-blueprint.json";
 
 async function runInspect(
   args: string[],
-  options: { cwd?: string; preload?: string; token?: string } = {},
+  options: { cwd?: string; home?: string; preload?: string; token?: string } = {},
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const command = ["bun"];
   if (options.preload) command.push("--preload", options.preload);
@@ -25,6 +25,7 @@ async function runInspect(
       ...process.env,
       MAKE_FIXER_NO_UPDATE: "1",
       MAKE_FIXER_RATE_DB: join(options.cwd ?? tmpdir(), "inspect-rate.sqlite"),
+      ...(options.home ? { HOME: options.home } : {}),
       ...(options.token ? { MAKE_API_TOKEN: options.token } : {}),
     },
   });
@@ -193,6 +194,8 @@ describe("CLI commands", () => {
     const cases = [
       { args: ["--summary"], message: "A scenario ID or Make.com URL is required." },
       { args: ["-s", "not-an-id", "--summary"], message: '"not-an-id" is not a valid scenario ID or Make.com URL.' },
+      { args: ["-s", "https://eu1.make.com/1/scenarios/0/edit", "--summary"], message: '"https://eu1.make.com/1/scenarios/0/edit" is not a valid scenario ID or Make.com URL.' },
+      { args: ["-s", "https://eu1.make.com/1/scenarios/-1/edit", "--summary"], message: '"https://eu1.make.com/1/scenarios/-1/edit" is not a valid scenario ID or Make.com URL.' },
       { args: ["-s", "1", "--module", "abc"], message: "--module must be a positive integer." },
       { args: ["-s", "1", "--module", "0"], message: "--module must be a positive integer." },
       { args: ["-s", "1", "--module", "1", "--summary"], message: "Choose exactly one of --module or --summary." },
@@ -204,6 +207,39 @@ describe("CLI commands", () => {
       const output = expectInspectFailure(await runInspect(testCase.args));
       expect(output.error.message).toBe(testCase.message);
     }
+  });
+
+  test("inspect resolves bare scenario failures through JSON envelopes", async () => {
+    const missingTokenDirectory = mkdtempSync(join(tmpdir(), "make-fixer-inspect-missing-token-"));
+    const missingToken = expectInspectFailure(await runInspect(["-s", "987654321", "--summary"], {
+      cwd: missingTokenDirectory,
+      home: missingTokenDirectory,
+    }));
+    rmSync(missingTokenDirectory, { recursive: true, force: true });
+    expect(missingToken.error.message).toBe("Unable to inspect scenario.");
+
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-inspect-zone-failure-"));
+    const preload = join(directory, "mock-fetch.ts");
+    await Bun.write(preload, `
+      globalThis.fetch = async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.includes("/scenarios/987654322")) return new Response("Token provider-secret", { status: 404 });
+        if (url.includes("/scenarios/987654323")) return new Response("Token provider-secret", { status: 401 });
+        return new Response("not found", { status: 404 });
+      };
+    `);
+
+    for (const scenarioId of ["987654322", "987654323"]) {
+      const output = expectInspectFailure(await runInspect(["-s", scenarioId, "--summary"], {
+        cwd: directory,
+        home: directory,
+        preload,
+        token: "fake",
+      }));
+      expect(output.error.message).toBe("Unable to inspect scenario.");
+      expect(JSON.stringify(output)).not.toContain("provider-secret");
+    }
+    rmSync(directory, { recursive: true, force: true });
   });
 
   test("inspect rejects duplicates and sanitizes remote fetch failures", async () => {

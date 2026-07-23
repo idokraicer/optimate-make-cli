@@ -63,7 +63,7 @@ export class DuplicateModuleIdsError extends Error {
 }
 
 export class InspectInputError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly legacyDiagnostics: string[] = []) {
     super(message);
     this.name = "InspectInputError";
   }
