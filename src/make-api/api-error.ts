@@ -26,7 +26,7 @@ interface BoundedResponseText {
 }
 
 const SENSITIVE_KEY = /(?:authorization|token|api[-_]?key|cookie|secret|password|credential)/i;
-const SENSITIVE_TEXT_ASSIGNMENT = /(^|[^A-Za-z0-9_-])["']?(?:authorization|proxy-authorization|x-api-key|api-key|apikey|cookie|set-cookie|password|credentials?|secret|token)["']?\s*[:=]/i;
+const SENSITIVE_TEXT_ASSIGNMENT = /(^|[^A-Za-z0-9_-])["']?[A-Za-z0-9_-]*(?:token|secret|password|credential|authorization|cookie|api[_-]?key)[A-Za-z0-9_-]*["']?\s*[:=]/i;
 
 function classifyStatus(status: number): Pick<ClassifiedApiError, "code" | "retryable"> {
   if (status === 401) return { code: "AUTH_INVALID", retryable: false };
