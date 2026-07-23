@@ -37,7 +37,6 @@ type RunDependencies = {
 type RunFailureCode =
   | "INVALID_DATA"
   | "RUN_STILL_RUNNING"
-  | "RUN_TIMEOUT"
   | "RUN_CANCELLED"
   | "UNKNOWN_API_ERROR";
 
@@ -57,8 +56,6 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
         typeof value === "string" ? value : JSON.stringify(value, null, 2),
       ));
       let executionId: string | null = null;
-      let timedOut = false;
-      let waitTimer: ReturnType<typeof setTimeout> | undefined;
       let waitDeadline = 0;
       const controller = new AbortController();
       const cancel = () => controller.abort();
@@ -104,10 +101,6 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
         let initial: Awaited<ReturnType<RunClient["runScenario"]>>;
         if (opts.wait) {
           waitDeadline = Date.now() + timeoutMs;
-          waitTimer = setTimeout(() => {
-            timedOut = true;
-            controller.abort(new DOMException("Scenario run wait timed out.", "AbortError"));
-          }, timeoutMs);
         }
         try {
           initial = await client.runScenario(parsed.scenarioId, {
@@ -133,17 +126,26 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
           status?: string;
           outputs?: object;
           error?: unknown;
+          code?: "RUN_STILL_RUNNING";
+          executionId?: string;
         } = initial;
         const initialStatus = String(initial.status ?? "").toUpperCase();
         if (opts.wait && !["SUCCESS", "WARNING", "ERROR"].includes(initialStatus)) {
-          result = await pollScenarioExecution({
-            scenarioId: parsed.scenarioId,
-            executionId,
-            timeoutMs: Math.max(1, waitDeadline - Date.now()),
-            signal: controller.signal,
-            fetchExecutionDetails: (scenarioId, id, signal) =>
-              client.fetchExecutionDetails(scenarioId, id, signal),
-          });
+          const remainingMs = waitDeadline - Date.now();
+          result = remainingMs <= 0
+            ? {
+                status: "RUNNING",
+                code: "RUN_STILL_RUNNING",
+                executionId,
+              }
+            : await pollScenarioExecution({
+                scenarioId: parsed.scenarioId,
+                executionId,
+                timeoutMs: remainingMs,
+                signal: controller.signal,
+                fetchExecutionDetails: (scenarioId, id, signal) =>
+                  client.fetchExecutionDetails(scenarioId, id, signal),
+              });
         }
         if ("code" in result && result.code === "RUN_STILL_RUNNING") {
           emit(runFailure("RUN_STILL_RUNNING", "The scenario is still running.", {
@@ -167,25 +169,13 @@ export function registerRunCommand(program: Command, dependencies: RunDependenci
           : successEnvelope("run", data, runMeta(dependencies.cliVersion, client, parsed.scenarioId)));
       } catch (error) {
         const cancelled = error instanceof DOMException && error.name === "AbortError";
-        if (timedOut && executionId) {
-          emit(runFailure("RUN_STILL_RUNNING", "The scenario may still be running.", {
-            executionId,
-            status: "RUNNING",
-            retryable: true,
-          }));
-          process.exitCode = 3;
-          return;
-        }
         emit(runFailure(
-          timedOut ? "RUN_TIMEOUT" : cancelled ? "RUN_CANCELLED" : "INVALID_DATA",
-          timedOut
-            ? "The run request timed out before Make returned an execution ID."
-            : cancelled ? "Waiting for the scenario run was cancelled." : safeRunMessage(error),
+          cancelled ? "RUN_CANCELLED" : "INVALID_DATA",
+          cancelled ? "Waiting for the scenario run was cancelled." : safeRunMessage(error),
           executionId ? { executionId } : {},
         ));
         process.exitCode = 1;
       } finally {
-        if (waitTimer) clearTimeout(waitTimer);
         process.removeListener("SIGINT", cancel);
       }
     });
