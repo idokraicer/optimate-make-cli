@@ -1,5 +1,6 @@
 import {
   SharedRateLimiter,
+  type ExecutionLease,
   type RateBucket,
   type RateLimitSnapshot,
 } from "./rate-limiter";
@@ -8,6 +9,7 @@ const DEFAULT_REQUEST_RETRIES = 5;
 const DEFAULT_COMMAND_RETRIES = 20;
 const MAX_BACKOFF_MS = 30_000;
 const DEFAULT_429_WAIT_MS = 60_000;
+const LEASE_HEARTBEAT_MS = 60_000;
 const CREDENTIAL_HEADER = /(?:authorization|cookie|token|api[-_]?key|secret|credential)/i;
 const SAFE_DEDUP_HEADERS = new Set([
   "accept",
@@ -31,7 +33,8 @@ export interface RateLimiterStore {
   noteRetry(bucket: RateBucket): void;
   recordExemptRequest(bucket: RateBucket): void;
   setOrganizationLimit(bucket: RateBucket, apiLimit: number): void;
-  acquireExecutionLease(bucket: RateBucket, signal?: AbortSignal): Promise<() => void>;
+  waitForCooldown(bucket: RateBucket, signal?: AbortSignal): Promise<void>;
+  acquireExecutionLease(bucket: RateBucket, signal?: AbortSignal): Promise<ExecutionLease>;
 }
 
 export type MutationReconciliation = "retry" | Response | undefined;
@@ -53,6 +56,8 @@ export interface RequestCoordinatorOptions {
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
   maxCommandRetries?: number;
+  scheduleInterval?: (callback: () => void, intervalMs: number) => unknown;
+  clearInterval?: (handle: unknown) => void;
 }
 
 export interface RequestCoordinatorLike {
@@ -131,9 +136,8 @@ function isDocumentedRateExempt(url: string | URL | Request, init: RequestInit):
 }
 
 function effectiveHeaders(url: string | URL | Request, init: RequestInit): Headers {
-  const headers = new Headers(url instanceof Request ? url.headers : undefined);
-  for (const [name, value] of new Headers(init.headers)) headers.set(name, value);
-  return headers;
+  if (init.headers !== undefined) return new Headers(init.headers);
+  return new Headers(url instanceof Request ? url.headers : undefined);
 }
 
 function opaqueHash(value: string): string {
@@ -171,31 +175,60 @@ function deduplicationKey(
   ]));
 }
 
-function cloneRequestForAttempt(
-  source: Request,
+interface ReplayableRequestTemplate {
+  url: string;
+  method: string;
+  headers: Headers;
+  metadata: Record<string, unknown>;
+  body?: ArrayBuffer;
+}
+
+async function normalizeReplayableRequest(
+  source: string | URL | Request,
   init: RequestInit,
-  method: string,
-  body: ArrayBuffer | undefined,
+): Promise<ReplayableRequestTemplate> {
+  const nativeRequest = new Request(source, init);
+  const initValues = init as RequestInit & Record<string, unknown>;
+  const sourceValues = source instanceof Request
+    ? source as Request & Record<string, unknown>
+    : undefined;
+  const metadata = Object.fromEntries(REQUEST_METADATA_PROPERTIES.map((property) => {
+    const nativeValue = (nativeRequest as Request & Record<string, unknown>)[property];
+    const sourceValue = sourceValues?.[property];
+    return [
+      property,
+      initValues[property] ?? (
+        sourceValue !== undefined && nativeValue !== sourceValue
+          ? sourceValue
+          : nativeValue
+      ),
+    ];
+  }));
+  const body = nativeRequest.body === null
+    ? undefined
+    : await nativeRequest.arrayBuffer();
+  return {
+    url: nativeRequest.url,
+    method: nativeRequest.method,
+    headers: new Headers(nativeRequest.headers),
+    metadata,
+    body,
+  };
+}
+
+function requestFromTemplate(
+  template: ReplayableRequestTemplate,
   signal?: AbortSignal,
 ): Request {
-  const initValues = init as RequestInit & Record<string, unknown>;
-  const sourceValues = source as Request & Record<string, unknown>;
-  const metadata = Object.fromEntries(
-    REQUEST_METADATA_PROPERTIES.map((property) => [
-      property,
-      initValues[property] ?? sourceValues[property],
-    ]),
-  );
-  const attempt = new Request(source.url, {
-    ...metadata,
-    ...init,
-    method,
-    headers: effectiveHeaders(source, init),
-    body: body?.slice(0),
+  const attempt = new Request(template.url, {
+    ...template.metadata,
+    method: template.method,
+    headers: template.headers,
+    body: template.body?.slice(0),
     signal,
   });
   for (const property of REQUEST_METADATA_PROPERTIES) {
-    const value = metadata[property];
+    const value = template.metadata[property];
     if (value === undefined || attempt[property] === value) continue;
     Object.defineProperty(attempt, property, {
       configurable: true,
@@ -206,24 +239,6 @@ function cloneRequestForAttempt(
   return attempt;
 }
 
-async function requestBodyForReplay(
-  source: Request,
-  init: RequestInit,
-  method: string,
-): Promise<ArrayBuffer | undefined> {
-  if (method === "GET" || method === "HEAD") return undefined;
-  if (init.body !== undefined && init.body !== null) {
-    const request = new Request(source.url, {
-      method,
-      headers: effectiveHeaders(source, init),
-      body: init.body,
-    });
-    return request.arrayBuffer();
-  }
-  if (source.body === null) return undefined;
-  return source.clone().arrayBuffer();
-}
-
 export class RequestCoordinator implements RequestCoordinatorLike {
   private readonly limiter: RateLimiterStore;
   private readonly executor: RequestExecutor;
@@ -231,6 +246,8 @@ export class RequestCoordinator implements RequestCoordinatorLike {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
   private readonly maxCommandRetries: number;
+  private readonly scheduleInterval: (callback: () => void, intervalMs: number) => unknown;
+  private readonly clearScheduledInterval: (handle: unknown) => void;
   private commandRetries = 0;
   private readonly inFlightGets = new Map<string, Promise<Response>>();
 
@@ -241,6 +258,10 @@ export class RequestCoordinator implements RequestCoordinatorLike {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.random = options.random ?? Math.random;
     this.maxCommandRetries = options.maxCommandRetries ?? DEFAULT_COMMAND_RETRIES;
+    this.scheduleInterval = options.scheduleInterval
+      ?? ((callback, intervalMs) => setInterval(callback, intervalMs));
+    this.clearScheduledInterval = options.clearInterval
+      ?? ((handle) => clearInterval(handle as ReturnType<typeof setInterval>));
   }
 
   async request(
@@ -276,39 +297,46 @@ export class RequestCoordinator implements RequestCoordinatorLike {
     const maxRetries = context.maxRetries ?? DEFAULT_REQUEST_RETRIES;
     const exempt = context.organizationRateExempt === true
       && isDocumentedRateExempt(url, { ...init, method });
-    const replayBody = url instanceof Request
-      ? await requestBodyForReplay(url, init, method)
-      : undefined;
+    const requestTemplate = await normalizeReplayableRequest(url, init);
     let boundedRetries = 0;
 
     while (true) {
-      if (signal?.aborted) throw abortError(signal);
-      if (exempt) {
-        this.limiter.recordExemptRequest(context.bucket);
-      } else {
-        const rpm = context.effectiveRpm
-          ?? this.limiter.getSnapshot(context.bucket).effectiveRpm;
-        await this.limiter.reserve(context.bucket, rpm, signal);
-      }
-      if (signal?.aborted) throw abortError(signal);
-
       let response: Response | undefined;
       let requestError: unknown;
       let requestFailed = false;
-      const release = await this.limiter.acquireExecutionLease(context.bucket, signal);
+      const lease = await this.limiter.acquireExecutionLease(context.bucket, signal);
+      let heartbeat: unknown;
+      let heartbeatScheduled = false;
       try {
-        if (signal?.aborted) throw abortError(signal);
-        if (url instanceof Request) {
-          const attempt = cloneRequestForAttempt(url, init, method, replayBody, signal);
-          response = await this.executor(attempt);
-        } else {
-          response = await this.executor(url, { ...init, method, signal });
+        heartbeat = this.scheduleInterval(() => lease.renew?.(), LEASE_HEARTBEAT_MS);
+        heartbeatScheduled = true;
+        await this.limiter.waitForCooldown(context.bucket, signal);
+        if (!exempt) {
+          const discoveredRpm = this.limiter.getSnapshot(context.bucket).effectiveRpm;
+          const requestedRpm = context.effectiveRpm === undefined
+            ? discoveredRpm
+            : Math.max(1, Math.floor(context.effectiveRpm));
+          await this.limiter.reserve(
+            context.bucket,
+            Math.min(discoveredRpm, requestedRpm),
+            signal,
+          );
         }
-      } catch (error) {
-        requestFailed = true;
-        requestError = error;
+        if (signal?.aborted) throw abortError(signal);
+        if (exempt) this.limiter.recordExemptRequest(context.bucket);
+        try {
+          response = await this.executor(requestFromTemplate(requestTemplate, signal));
+        } catch (error) {
+          requestFailed = true;
+          requestError = error;
+        }
       } finally {
-        release();
+        try {
+          if (heartbeatScheduled) this.clearScheduledInterval(heartbeat);
+        } finally {
+          if (lease.release) lease.release();
+          else lease();
+        }
       }
 
       if (requestFailed) {

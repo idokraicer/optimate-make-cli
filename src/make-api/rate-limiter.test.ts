@@ -119,6 +119,35 @@ describe("SharedRateLimiter", () => {
     second.close();
   });
 
+  test("cooldown-only waiting rechecks when another process extends the cooldown", async () => {
+    let now = 0;
+    const sleeps: number[] = [];
+    const dbPath = temporaryDatabasePath();
+    const writer = new SharedRateLimiter({ dbPath, now: () => now });
+    let extended = false;
+    const waiter = new SharedRateLimiter({
+      dbPath,
+      now: () => now,
+      random: () => 0,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+        if (!extended) {
+          extended = true;
+          writer.setCooldown(bucket, now + 2_000);
+        }
+      },
+    });
+    writer.setCooldown(bucket, 1_000);
+
+    await waiter.waitForCooldown(bucket);
+
+    expect(sleeps).toEqual([1_000, 2_000]);
+    expect(waiter.getSnapshot(bucket).requestsSent).toBe(0);
+    writer.close();
+    waiter.close();
+  });
+
   test("aborting after a reservation begins waiting prevents it from being granted", async () => {
     const dbPath = temporaryDatabasePath();
     let notifySleeping!: () => void;
@@ -172,6 +201,29 @@ describe("SharedRateLimiter", () => {
     await expect(queued).rejects.toHaveProperty("name", "AbortError");
     releaseFirst();
     releaseSecond();
+    limiter.close();
+  });
+
+  test("stale unrenewed crash leases expire after ten minutes", async () => {
+    let now = 0;
+    const limiter = new SharedRateLimiter({
+      dbPath: temporaryDatabasePath(),
+      now: () => now,
+      random: () => 0,
+    });
+    const first = await limiter.acquireExecutionLease(bucket);
+    const second = await limiter.acquireExecutionLease(bucket);
+
+    now = 600_001;
+    const recovered = await limiter.acquireExecutionLease(bucket);
+
+    const release = (lease: unknown) => {
+      if (typeof lease === "function") lease();
+      else (lease as { release: () => void }).release();
+    };
+    release(first);
+    release(second);
+    release(recovered);
     limiter.close();
   });
 

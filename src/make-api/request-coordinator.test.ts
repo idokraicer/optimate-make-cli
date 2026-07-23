@@ -55,6 +55,7 @@ function fakeLimiter() {
     reserve: async (reservedBucket, rpm) => {
       reservations.push({ bucket: reservedBucket, rpm });
     },
+    waitForCooldown: async () => undefined,
     setCooldown: (_reservedBucket, untilMs) => {
       cooldowns.push(untilMs);
     },
@@ -298,13 +299,14 @@ describe("RequestCoordinator", () => {
     const firstController = new AbortController();
     const coordinator = new RequestCoordinator({
       limiter: rate.limiter,
-      request: async (_url, init) => {
+      request: async (input, init) => {
         calls++;
         if (calls === 1) notifyFirstStarted();
-        if (init?.signal) {
+        const signal = input instanceof Request ? input.signal : init?.signal;
+        if (signal) {
           await new Promise<void>((resolve, reject) => {
             const onAbort = () => reject(new DOMException("aborted", "AbortError"));
-            init.signal!.addEventListener("abort", onAbort, { once: true });
+            signal.addEventListener("abort", onAbort, { once: true });
             setTimeout(resolve, 0);
           });
         }
@@ -375,6 +377,88 @@ describe("RequestCoordinator", () => {
 
     while (executorReleases.length > 0) executorReleases.shift()!();
     await Promise.all(requests);
+    firstLimiter.close();
+    secondLimiter.close();
+  });
+
+  test("heartbeats keep cross-process leases valid beyond the initial TTL", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-heartbeat-"));
+    temporaryDirectories.push(directory);
+    const dbPath = join(directory, "rate.sqlite");
+    let now = 0;
+    const leaseWaiters: Array<() => void> = [];
+    const callbacks = new Set<() => void>();
+    const limiterOptions = {
+      dbPath,
+      now: () => now,
+      random: () => 0,
+      sleep: async () => {
+        await new Promise<void>((resolve) => leaseWaiters.push(resolve));
+      },
+    };
+    const firstLimiter = new SharedRateLimiter({ ...limiterOptions, pid: 101 });
+    const secondLimiter = new SharedRateLimiter({ ...limiterOptions, pid: 202 });
+    let active = 0;
+    let maxActive = 0;
+    const executorReleases: Array<() => void> = [];
+    const executor: RequestExecutor = async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => executorReleases.push(resolve));
+      active--;
+      return new Response("ok");
+    };
+    const coordinatorOptions = {
+      request: executor,
+      scheduleInterval: (callback: () => void) => {
+        callbacks.add(callback);
+        return callback;
+      },
+      clearInterval: (handle: unknown) => {
+        callbacks.delete(handle as () => void);
+      },
+    };
+    const firstCoordinator = new RequestCoordinator({
+      ...coordinatorOptions,
+      limiter: firstLimiter,
+    });
+    const secondCoordinator = new RequestCoordinator({
+      ...coordinatorOptions,
+      limiter: secondLimiter,
+    });
+
+    const first = firstCoordinator.request(
+      "https://eu1.make.com/api/v2/scenarios/1",
+      {},
+      context(),
+    );
+    const second = secondCoordinator.request(
+      "https://eu1.make.com/api/v2/scenarios/2",
+      {},
+      context(),
+    );
+    for (let tick = 0; tick < 8; tick++) await Promise.resolve();
+    expect(active).toBe(2);
+
+    now = 300_000;
+    for (const callback of [...callbacks]) callback();
+    now = 600_001;
+    const third = secondCoordinator.request(
+      "https://eu1.make.com/api/v2/scenarios/3",
+      {},
+      context(),
+    );
+    for (let tick = 0; tick < 8; tick++) await Promise.resolve();
+
+    expect(active).toBe(2);
+    expect(maxActive).toBe(2);
+    executorReleases.shift()!();
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+    leaseWaiters.shift()!();
+    for (let tick = 0; tick < 8; tick++) await Promise.resolve();
+    while (executorReleases.length > 0) executorReleases.shift()!();
+    await Promise.all([first, second, third]);
+    expect(callbacks.size).toBe(0);
     firstLimiter.close();
     secondLimiter.close();
   });
@@ -470,5 +554,135 @@ describe("RequestCoordinator", () => {
 
     expect(rate.exemptRequests).toBe(1);
     expect(rate.reservations).toHaveLength(1);
+  });
+
+  test("an exempt run observes another process shared cooldown without reserving RPM", async () => {
+    let now = 0;
+    const sleeps: number[] = [];
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-exempt-cooldown-"));
+    temporaryDirectories.push(directory);
+    const dbPath = join(directory, "rate.sqlite");
+    const writer = new SharedRateLimiter({ dbPath, now: () => now });
+    const waiter = new SharedRateLimiter({
+      dbPath,
+      now: () => now,
+      random: () => 0,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+    });
+    writer.setCooldown(bucket, 2_000);
+    let sentAt = -1;
+    const coordinator = new RequestCoordinator({
+      limiter: waiter,
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+      request: async () => {
+        sentAt = now;
+        return new Response("ok");
+      },
+    });
+
+    await coordinator.request(
+      "https://eu1.make.com/api/v2/scenarios/123/run",
+      { method: "POST" },
+      context({ organizationRateExempt: true }),
+    );
+
+    expect(sentAt).toBe(2_000);
+    expect(sleeps).toEqual([2_000]);
+    expect(waiter.getSnapshot(bucket).requestsSent).toBe(1);
+    writer.close();
+    waiter.close();
+  });
+
+  test("acquires the execution lease before making a fresh send-adjacent reservation", async () => {
+    let now = 0;
+    const events: string[] = [];
+    const limiter: RateLimiterStore = {
+      getSnapshot: () => ({
+        documentedRpm: 60,
+        effectiveRpm: 57,
+        limitSource: "organization_api",
+        requestsSent: 0,
+        retries: 0,
+        cooldownMs: 0,
+      }),
+      acquireExecutionLease: async () => {
+        events.push(`lease:${now}`);
+        now = 61_000;
+        return () => events.push(`release:${now}`);
+      },
+      waitForCooldown: async () => {
+        events.push(`cooldown:${now}`);
+      },
+      reserve: async (_bucket, rpm) => {
+        events.push(`reserve:${rpm}:${now}`);
+      },
+      setCooldown: () => undefined,
+      noteRetry: () => undefined,
+      recordExemptRequest: () => undefined,
+      setOrganizationLimit: () => undefined,
+    };
+    const coordinator = new RequestCoordinator({
+      limiter,
+      request: async () => {
+        events.push(`send:${now}`);
+        return new Response("ok");
+      },
+    });
+
+    await coordinator.request("https://eu1.make.com/api/v2/scenarios/1", {}, context());
+
+    expect(events).toEqual([
+      "lease:0",
+      "cooldown:61000",
+      "reserve:57:61000",
+      "send:61000",
+      "release:61000",
+    ]);
+  });
+
+  test("clamps effective RPM overrides to the discovered allowance", async () => {
+    const rpms: number[] = [];
+    const limiter: RateLimiterStore = {
+      reserve: async (_bucket, rpm) => {
+        rpms.push(rpm);
+      },
+      waitForCooldown: async () => undefined,
+      setCooldown: () => undefined,
+      getSnapshot: () => ({
+        documentedRpm: 60,
+        effectiveRpm: 57,
+        limitSource: "organization_api",
+        requestsSent: 0,
+        retries: 0,
+        cooldownMs: 0,
+      }),
+      noteRetry: () => undefined,
+      recordExemptRequest: () => undefined,
+      setOrganizationLimit: () => undefined,
+      acquireExecutionLease: async () => () => undefined,
+    };
+    const coordinator = new RequestCoordinator({
+      limiter,
+      request: async () => new Response("ok"),
+    });
+
+    await coordinator.request(
+      "https://eu1.make.com/api/v2/scenarios/1",
+      {},
+      context({ effectiveRpm: 100 }),
+    );
+    await coordinator.request(
+      "https://eu1.make.com/api/v2/scenarios/2",
+      {},
+      context({ effectiveRpm: 10 }),
+    );
+
+    expect(rpms).toEqual([57, 10]);
   });
 });

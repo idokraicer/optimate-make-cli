@@ -96,6 +96,87 @@ describe("MakeApiClient", () => {
     expect(requests[0]!.bucket.organizationId).toBe("unknown");
   });
 
+  test("keeps a discovered organization bucket when limit details are inaccessible", async () => {
+    const requestBuckets: Array<number | "unknown"> = [];
+    const coordinator = {
+      request: async (url: string | URL, _init: RequestInit, requestContext: RequestContext) => {
+        requestBuckets.push(requestContext.bucket.organizationId);
+        if (String(url).endsWith("/api/v2/teams/2186253")) {
+          return Response.json({ team: { id: 2186253, organizationId: 8430514 } });
+        }
+        if (String(url).endsWith("/api/v2/organizations/8430514")) {
+          return new Response("forbidden", { status: 403 });
+        }
+        return Response.json({ scenario: { id: 123 } });
+      },
+      getRateLimitSnapshot: (rateBucket: RateBucket) => ({
+        documentedRpm: null,
+        effectiveRpm: 30,
+        limitSource: "fallback" as const,
+        requestsSent: 0,
+        retries: 0,
+        cooldownMs: 0,
+        organizationId: rateBucket.organizationId,
+      }),
+    };
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+
+    expect(await client.discoverOrganizationForTeam(2186253)).toBe(false);
+    await client.fetchScenario(123);
+
+    expect(requestBuckets).toEqual(["unknown", 8430514, 8430514]);
+    expect(client.getRateLimitSnapshot()).toMatchObject({
+      documentedRpm: null,
+      effectiveRpm: 30,
+      limitSource: "fallback",
+      organizationId: 8430514,
+    });
+  });
+
+  test("reuses an exact-organization cached limit when detail refresh is inaccessible", async () => {
+    const coordinator = {
+      request: async (url: string | URL) => {
+        if (String(url).endsWith("/api/v2/teams/2186253")) {
+          return Response.json({ team: { id: 2186253, organizationId: 8430514 } });
+        }
+        return new Response("forbidden", { status: 403 });
+      },
+      getRateLimitSnapshot: (rateBucket: RateBucket) => rateBucket.organizationId === 8430514
+        ? {
+            documentedRpm: 60,
+            effectiveRpm: 57,
+            limitSource: "cache" as const,
+            requestsSent: 0,
+            retries: 0,
+            cooldownMs: 0,
+          }
+        : {
+            documentedRpm: null,
+            effectiveRpm: 30,
+            limitSource: "fallback" as const,
+            requestsSent: 0,
+            retries: 0,
+            cooldownMs: 0,
+          },
+    };
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+
+    expect(await client.discoverOrganizationForTeam(2186253)).toBe(false);
+    expect(client.getRateLimitSnapshot()).toMatchObject({
+      documentedRpm: 60,
+      effectiveRpm: 57,
+      limitSource: "cache",
+    });
+  });
+
   test("organization-scoped methods initialize rate context automatically", async () => {
     const urls: string[] = [];
     const coordinator = {
