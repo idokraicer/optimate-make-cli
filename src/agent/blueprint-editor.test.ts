@@ -164,6 +164,34 @@ describe("diffBlueprints", () => {
     expect(diff.duplicateIds).toEqual([1]);
   });
 
+  test("ignores nullable error-handler IDs while retaining changed nested modules", () => {
+    const original = {
+      name: "Test",
+      flow: [
+        {
+          id: 1,
+          module: "http:ActionSendData",
+          onerror: [
+            { id: null, module: "builtin:Ignore" },
+            {
+              id: null,
+              module: "builtin:Router",
+              routes: [{ flow: [{ id: 5, module: "builtin:Ignore", mapper: { value: "before" } }] }],
+            },
+          ],
+        },
+      ],
+    };
+    const modified = structuredClone(original);
+    modified.flow[0].onerror[1].routes[0].flow[0].mapper.value = "after";
+
+    const diff = diffBlueprints(original as any, modified as any);
+
+    expect(diff.duplicateIds).toEqual([]);
+    expect(diff.modulesModified).toEqual([1, 5]);
+    expect(diff.modulesModified).not.toContain(null);
+  });
+
   test("reports name change", () => {
     const original = { name: "Old", flow: [] };
     const modified = { name: "New", flow: [] };

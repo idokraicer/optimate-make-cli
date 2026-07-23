@@ -77,4 +77,44 @@ describe("applyFixes", () => {
     const result = await applyFixes(blueprint, autoFixable, { skipAi: true });
     expect(result.changes).toHaveLength(0);
   });
+
+  test("applies naming fixes inside branches and error-handler routes", async () => {
+    const blueprint = {
+      name: "test",
+      flow: [
+        {
+          id: 17,
+          module: "builtin:BasicIfElse",
+          branches: [
+            { flow: [{ id: 18, module: "http:ActionSendData" }] },
+          ],
+        },
+        {
+          id: 19,
+          module: "http:ActionSendData",
+          onerror: [
+            {
+              id: null,
+              module: "builtin:Router",
+              routes: [{ flow: [{ id: 21, module: "http:ActionSendData" }] }],
+            },
+          ],
+        },
+      ],
+    } as Blueprint;
+    const issues = [
+      { moduleId: 18, moduleType: "http:ActionSendData", category: "naming", severity: "warning", message: "", autoFixable: true },
+      { moduleId: 21, moduleType: "http:ActionSendData", category: "naming", severity: "warning", message: "", autoFixable: true },
+    ] as any;
+
+    const result = await applyFixes(blueprint, issues, { skipAi: true, only: ["naming"] });
+
+    expect(result.fixed.flow[0].branches?.[0].flow?.[0].metadata?.designer?.name).toBe(
+      "http:ActionSendData (auto-named)",
+    );
+    expect(result.fixed.flow[1].onerror?.[0].routes?.[0].flow?.[0].metadata?.designer?.name).toBe(
+      "http:ActionSendData (auto-named)",
+    );
+    expect(result.changes.map(({ moduleId }) => moduleId)).toEqual([18, 21]);
+  });
 });
