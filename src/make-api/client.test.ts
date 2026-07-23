@@ -1,8 +1,33 @@
 import { describe, expect, test } from "bun:test";
 import { MakeApiClient } from "./client";
 import { MakeAppSchema, AppModuleSchema } from "./types";
+import type { RequestContext } from "./request-coordinator";
 
 describe("MakeApiClient", () => {
+  test("routes requests through one coordinator with authentication and rate context", async () => {
+    const requests: Array<{ url: string; init: RequestInit; context: RequestContext }> = [];
+    const coordinator = {
+      request: async (url: string | URL, init: RequestInit, context: RequestContext) => {
+        requests.push({ url: String(url), init, context });
+        return Response.json({ scenario: { id: 123 } });
+      },
+    };
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      organizationId: 8430514,
+      coordinator,
+    });
+
+    expect(await client.fetchScenario(123)).toEqual({ id: 123 });
+    expect(requests).toHaveLength(1);
+    expect(new Headers(requests[0]!.init.headers).get("authorization")).toBe("Token test-token");
+    expect(requests[0]!.context.bucket).toEqual({
+      zone: "eu1",
+      organizationId: 8430514,
+    });
+  });
+
   test("constructs correct blueprint URL", () => {
     const client = new MakeApiClient({
       token: "test-token",
