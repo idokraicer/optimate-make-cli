@@ -3,6 +3,27 @@ import { MakeApiClient, ScenarioRunRequestError } from "./client";
 import { MakeAppSchema, AppModuleSchema } from "./types";
 import type { RequestContext } from "./request-coordinator";
 import type { RateBucket, RateLimitSnapshot } from "./rate-limiter";
+import { RequestCoordinator, type RateLimiterStore } from "./request-coordinator";
+
+function immediateLimiter(): RateLimiterStore {
+  return {
+    reserve: async () => undefined,
+    waitForCooldown: async () => undefined,
+    setCooldown: () => undefined,
+    getSnapshot: () => ({
+      documentedRpm: 60,
+      effectiveRpm: 57,
+      limitSource: "organization_api",
+      requestsSent: 0,
+      retries: 0,
+      cooldownMs: 0,
+    }),
+    noteRetry: () => undefined,
+    recordExemptRequest: () => undefined,
+    setOrganizationLimit: () => undefined,
+    acquireExecutionLease: async () => () => undefined,
+  };
+}
 
 describe("MakeApiClient", () => {
   test("uses documented interface, run, and execution endpoints with only run rate-exempt", async () => {
@@ -58,6 +79,148 @@ describe("MakeApiClient", () => {
       expect(error).toMatchObject({ executionId: "e-timeout", httpStatus: 408 });
       expect((error as Error).message).not.toContain("provider private detail");
     }
+  });
+
+  test("the real coordinator never retries a run POST after a 503", async () => {
+    let postCalls = 0;
+    const coordinator = new RequestCoordinator({
+      limiter: immediateLimiter(),
+      sleep: async () => {
+        throw new Error("run POST must not enter 503 backoff");
+      },
+      request: async () => {
+        postCalls++;
+        return Response.json({ executionId: "e-503" }, { status: 503 });
+      },
+    });
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+
+    await expect(client.runScenario(7, { responsive: true })).rejects.toMatchObject({
+      executionId: "e-503",
+      httpStatus: 503,
+    });
+    expect(postCalls).toBe(1);
+  });
+
+  test("run cancellation interrupts the real coordinator's indefinite 429 wait", async () => {
+    let notifySent!: () => void;
+    const sent = new Promise<void>((resolve) => { notifySent = resolve; });
+    let postCalls = 0;
+    const coordinator = new RequestCoordinator({
+      limiter: immediateLimiter(),
+      sleep: async () => new Promise<void>(() => undefined),
+      request: async () => {
+        postCalls++;
+        notifySent();
+        return new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "60" },
+        });
+      },
+    });
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+    const controller = new AbortController();
+    const pending = client.runScenario(7, { responsive: true }, controller.signal);
+    await sent;
+    controller.abort();
+
+    await expect(pending).rejects.toHaveProperty("name", "AbortError");
+    expect(postCalls).toBe(1);
+  });
+
+  test("run cancellation interrupts a shared cooldown before the POST is sent", async () => {
+    let notifyWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => { notifyWaiting = resolve; });
+    const limiter = immediateLimiter();
+    limiter.waitForCooldown = async (_bucket, signal) => {
+      notifyWaiting();
+      return await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(new DOMException("cancelled", "AbortError"));
+        }, { once: true });
+      });
+    };
+    let postCalls = 0;
+    const coordinator = new RequestCoordinator({
+      limiter,
+      request: async () => {
+        postCalls++;
+        return Response.json({ executionId: "must-not-run" });
+      },
+    });
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+    const controller = new AbortController();
+    const pending = client.runScenario(7, { responsive: true }, controller.signal);
+    await waiting;
+    controller.abort();
+
+    await expect(pending).rejects.toHaveProperty("name", "AbortError");
+    expect(postCalls).toBe(0);
+  });
+
+  test("poll cancellation reaches an in-flight execution GET", async () => {
+    let notifySent!: () => void;
+    const sent = new Promise<void>((resolve) => { notifySent = resolve; });
+    const coordinator = new RequestCoordinator({
+      limiter: immediateLimiter(),
+      request: async (request) => {
+        notifySent();
+        return await new Promise<Response>((_resolve, reject) => {
+          (request as Request).signal.addEventListener("abort", () => {
+            reject(new DOMException("cancelled", "AbortError"));
+          }, { once: true });
+        });
+      },
+    });
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator,
+    });
+    const controller = new AbortController();
+    const pending = client.fetchExecutionDetails(7, "e-running", controller.signal);
+    await sent;
+    controller.abort();
+
+    await expect(pending).rejects.toHaveProperty("name", "AbortError");
+  });
+
+  test("normalizes documented numeric run and execution statuses", async () => {
+    let call = 0;
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async () => {
+          call++;
+          return call === 1
+            ? Response.json({ executionId: "e-numeric", status: 1, outputs: { done: true } })
+            : call === 2
+              ? Response.json({ execution: { status: 2 } })
+              : Response.json({ execution: { status: 3 } });
+        },
+      },
+    });
+
+    expect(await client.runScenario(7, { responsive: true })).toEqual({
+      executionId: "e-numeric",
+      status: "SUCCESS",
+      outputs: { done: true },
+    });
+    expect(await client.fetchExecutionDetails(7, "e-warning")).toEqual({ status: "WARNING" });
+    expect(await client.fetchExecutionDetails(7, "e-error")).toEqual({ status: "ERROR" });
   });
   test("fetches documented team and organization details", async () => {
     const urls: string[] = [];

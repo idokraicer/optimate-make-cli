@@ -146,4 +146,27 @@ describe("execution polling", () => {
     })).rejects.toMatchObject({ name: "AbortError" });
     expect(calls).toBe(0);
   });
+
+  test("aborts an in-flight polling GET at the wait timeout and retains the ID", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const result = await pollScenarioExecution({
+      scenarioId: 1,
+      executionId: "exec-hanging",
+      timeoutMs: 5,
+      fetchExecutionDetails: async (_scenarioId, _executionId, signal) => {
+        receivedSignal = signal;
+        return await new Promise((_, reject) => {
+          signal?.addEventListener("abort", () => {
+            reject(new DOMException("timeout", "AbortError"));
+          }, { once: true });
+        });
+      },
+    });
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(result).toEqual({
+      status: "RUNNING",
+      code: "RUN_STILL_RUNNING",
+      executionId: "exec-hanging",
+    });
+  });
 });

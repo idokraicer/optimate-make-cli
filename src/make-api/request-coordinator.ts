@@ -45,6 +45,7 @@ export interface RequestContext {
   maxRetries?: number;
   effectiveRpm?: number;
   organizationRateExempt?: boolean;
+  retryTransientResponses?: boolean;
   networkRetrySafe?: boolean;
   reconcileMutation?: (error: unknown) => Promise<MutationReconciliation>;
 }
@@ -369,7 +370,7 @@ export class RequestCoordinator implements RequestCoordinatorLike {
         continue;
       }
 
-      if (response.status !== 503) return response;
+      if (response.status !== 503 || context.retryTransientResponses === false) return response;
       if (!this.consumeBoundedRetry(context.bucket, boundedRetries, maxRetries)) {
         return response;
       }

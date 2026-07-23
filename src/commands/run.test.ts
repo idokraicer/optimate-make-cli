@@ -7,16 +7,16 @@ function harness(overrides: Record<string, unknown> = {}) {
   const output: unknown[] = [];
   let runCalls = 0;
   const runImplementation = typeof overrides.runScenario === "function"
-    ? overrides.runScenario as () => Promise<any>
+    ? overrides.runScenario as (...args: any[]) => Promise<any>
     : async () => ({ executionId: "exec-123", status: "SUCCESS", outputs: { greeting: "Hello" } });
   const client = {
     fetchScenarioInterface: async () => ({
       input: [{ name: "name", type: "text", required: true }],
       output: [{ name: "greeting", type: "text" }],
     }),
-    runScenario: async () => {
+    runScenario: async (...args: any[]) => {
       runCalls++;
-      return runImplementation();
+      return runImplementation(...args);
     },
     fetchExecutionDetails: async () => ({ status: "SUCCESS", outputs: { greeting: "Hello" } }),
     getRateLimitSnapshot: () => ({
@@ -24,9 +24,9 @@ function harness(overrides: Record<string, unknown> = {}) {
       requestsSent: 1, retries: 0, cooldownMs: 0,
     }),
     ...overrides,
-    runScenario: async () => {
+    runScenario: async (...args: any[]) => {
       runCalls++;
-      return runImplementation();
+      return runImplementation(...args);
     },
   };
   const program = new Command().exitOverride();
@@ -48,6 +48,59 @@ describe("run command", () => {
       ok: true,
       command: "run",
       data: { preview: true, scenarioId: 7, input: { name: "Ada" } },
+    });
+  });
+
+  test("redacts previews and outputs while sending original validated input", async () => {
+    let sentData: unknown;
+    const h = harness({
+      fetchScenarioInterface: async () => ({
+        input: [{ name: "password", type: "text", required: true }],
+        output: [{ name: "apiToken", type: "text" }],
+      }),
+      runScenario: async (_scenarioId: number, body: { data?: object }) => {
+        sentData = body.data;
+        return {
+          executionId: "exec-secret",
+          status: "SUCCESS",
+          outputs: { apiToken: "output-secret", safe: "visible" },
+        };
+      },
+    });
+    await h.program.parseAsync([
+      "run", "-s", "7", "--data", '{"password":"input-secret"}', "--yes", "--wait",
+    ], { from: "user" });
+    expect(sentData).toEqual({ password: "input-secret" });
+    expect(JSON.stringify(h.output[0])).not.toContain("input-secret");
+    expect(JSON.stringify(h.output[0])).not.toContain("output-secret");
+    expect(h.output[0]).toMatchObject({
+      data: { outputs: { apiToken: "[REDACTED]", safe: "visible" } },
+    });
+  });
+
+  test("validation failures include a sanitized copy of the live interface", async () => {
+    const h = harness({
+      fetchScenarioInterface: async () => ({
+        input: [{
+          name: "password",
+          type: "text",
+          required: true,
+          specification: { defaultValue: "interface-secret" },
+        }],
+      }),
+    });
+    await h.program.parseAsync([
+      "run", "-s", "7", "--data", "{}",
+    ], { from: "user" });
+    expect(JSON.stringify(h.output[0])).not.toContain("interface-secret");
+    expect(h.output[0]).toMatchObject({
+      ok: false,
+      error: {
+        issues: [{ path: "password", message: "Required input is missing." }],
+        interface: {
+          input: [{ name: "password", specification: { defaultValue: "[REDACTED]" } }],
+        },
+      },
     });
   });
 
@@ -161,6 +214,33 @@ describe("run command", () => {
       ok: false,
       command: "run",
       error: { code: "RUN_STILL_RUNNING", executionId: "exec-slow" },
+    });
+  });
+
+  test("the CLI wait timeout aborts an in-flight run request", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const h = harness({
+      runScenario: async (
+        _scenarioId: number,
+        _body: unknown,
+        signal?: AbortSignal,
+      ) => {
+        receivedSignal = signal;
+        return await new Promise((_, reject) => {
+          signal?.addEventListener("abort", () => {
+            reject(new DOMException("timeout", "AbortError"));
+          }, { once: true });
+        });
+      },
+    });
+    await h.program.parseAsync([
+      "run", "-s", "7", "--data", '{"name":"Ada"}', "--yes", "--wait", "--timeout", "5ms",
+    ], { from: "user" });
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(h.runCalls).toBe(1);
+    expect(h.output[0]).toMatchObject({
+      ok: false,
+      error: { code: "RUN_TIMEOUT" },
     });
   });
 });
