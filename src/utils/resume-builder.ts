@@ -1,5 +1,5 @@
 import type { Module } from "../make-api/types";
-import { walkModules } from "./blueprint-traversal";
+import { findWalkedModulesById } from "./blueprint-traversal";
 
 /** A single field entry from a module's metadata.interface array */
 interface InterfaceField {
@@ -10,14 +10,20 @@ interface InterfaceField {
 }
 
 /**
- * Find a module by ID anywhere in the blueprint flow (including inside routes).
- * Does NOT search inside onerror arrays — the errored module is always in the main flow.
+ * Find a uniquely identified module anywhere in the blueprint flow.
  */
 export function findModuleById(flow: Module[], id: number): Module | null {
-  for (const walked of walkModules(flow)) {
-    if (walked.module.id === id) return walked.module;
+  const matches = findWalkedModulesById(flow, id);
+
+  if (matches.length === 0) return null;
+
+  if (matches.length > 1) {
+    throw new Error(
+      `Module #${id} is ambiguous at paths: ${matches.map(({ path }) => path).join(", ")}`,
+    );
   }
-  return null;
+
+  return matches[0].module;
 }
 
 /**

@@ -41,6 +41,19 @@ describe("findModuleById", () => {
     const flow: Module[] = [makeModule(1)];
     expect(findModuleById(flow, 99)).toBeNull();
   });
+
+  test("rejects duplicate module IDs with every matching path", () => {
+    const flow: Module[] = [
+      makeModule(5),
+      makeModule(10, {
+        routes: [{ flow: [makeModule(5)] }],
+      }),
+    ];
+
+    expect(() => findModuleById(flow, 5)).toThrow(
+      "Module #5 is ambiguous at paths: flow[0], flow[1].routes[0].flow[0]",
+    );
+  });
 });
 
 // --- extractInterface ---
