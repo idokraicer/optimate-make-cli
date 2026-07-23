@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MakeApiClient, ScenarioRunRequestError } from "./client";
+import { AmbiguousCreateError, MakeApiClient, ScenarioRunRequestError } from "./client";
 import { MakeAppSchema, AppModuleSchema } from "./types";
 import type { RequestContext } from "./request-coordinator";
 import type { RateBucket, RateLimitSnapshot } from "./rate-limiter";
@@ -26,6 +26,156 @@ function immediateLimiter(): RateLimiterStore {
 }
 
 describe("MakeApiClient", () => {
+  test("uses documented scenario lifecycle endpoints and serialized create body", async () => {
+    const requests: Array<{ url: string; init: RequestInit; context: RequestContext }> = [];
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async (url, init, context) => {
+          requests.push({ url: String(url), init, context });
+          if (init.method === "DELETE") return new Response(null, { status: 204 });
+          return Response.json({
+            scenario: {
+              id: 44, name: "probe", teamId: 21, isActive: false,
+              scheduling: { type: "on-demand" },
+            },
+          });
+        },
+      },
+    });
+    const blueprint = { name: "probe", flow: [], metadata: {} } as any;
+
+    await client.createScenario({
+      teamId: 21, blueprint, scheduling: { type: "on-demand" }, confirmed: true,
+    });
+    await client.fetchScenarioDetails(44);
+    await client.startScenario(44);
+    await client.stopScenario(44);
+    expect(await client.deleteScenario(44)).toBe(204);
+
+    expect(requests.map(({ url }) => url)).toEqual([
+      "https://eu1.make.com/api/v2/scenarios",
+      "https://eu1.make.com/api/v2/scenarios/44",
+      "https://eu1.make.com/api/v2/scenarios/44/start",
+      "https://eu1.make.com/api/v2/scenarios/44/stop",
+      "https://eu1.make.com/api/v2/scenarios/44",
+    ]);
+    expect(JSON.parse(String(requests[0].init.body))).toEqual({
+      blueprint: JSON.stringify(blueprint),
+      teamId: 21,
+      scheduling: JSON.stringify({ type: "on-demand" }),
+    });
+    expect(requests.filter(({ init }) => init.method !== undefined).map(({ init }) => init.method))
+      .toEqual(["POST", "POST", "POST", "DELETE"]);
+    for (const request of requests.filter(({ init }) => init.method && init.method !== "GET")) {
+      expect(request.context.retryTransientResponses).toBe(false);
+      expect(request.context.networkRetrySafe).toBe(false);
+    }
+  });
+
+  test("reconciles an ambiguous create transport failure by a complete exact-marker listing", async () => {
+    let createCalls = 0;
+    const coordinator = new RequestCoordinator({
+      limiter: immediateLimiter(),
+      request: async (request) => {
+        const url = new URL(request.url);
+        if (request.method === "POST") {
+          createCalls++;
+          throw new TypeError("socket closed after send");
+        }
+        if (url.pathname.endsWith("/teams/21")) {
+          return Response.json({ team: { id: 21, organizationId: 9 } });
+        }
+        if (url.pathname.endsWith("/organizations/9")) {
+          return Response.json({ organization: { id: 9, license: { apiLimit: 60 } } });
+        }
+        return Response.json({
+          scenarios: [{
+            id: 44,
+            teamId: 21,
+            name: "probe [123e4567-e89b-12d3-a456-426614174000]",
+            isActive: false,
+            scheduling: { type: "on-demand" },
+          }],
+        });
+      },
+    });
+    const client = new MakeApiClient({
+      token: "test-token", baseUrl: "https://eu1.make.com", coordinator,
+    });
+    const result = await client.createScenario({
+      teamId: 21,
+      blueprint: {
+        name: "probe [123e4567-e89b-12d3-a456-426614174000]",
+        flow: [],
+      } as any,
+      scheduling: { type: "on-demand" },
+      confirmed: true,
+    });
+    expect(result.id).toBe(44);
+    expect(createCalls).toBe(1);
+  });
+
+  test("reports multiple create reconciliation matches as AMBIGUOUS_CREATE without replay", async () => {
+    let createCalls = 0;
+    const coordinator = new RequestCoordinator({
+      limiter: immediateLimiter(),
+      request: async (request) => {
+        const url = new URL(request.url);
+        if (request.method === "POST") {
+          createCalls++;
+          throw new TypeError("socket closed after send");
+        }
+        if (url.pathname.endsWith("/teams/21")) {
+          return Response.json({ team: { id: 21, organizationId: 9 } });
+        }
+        if (url.pathname.endsWith("/organizations/9")) {
+          return Response.json({ organization: { id: 9, license: { apiLimit: 60 } } });
+        }
+        const marker = "[123e4567-e89b-12d3-a456-426614174000]";
+        return Response.json({ scenarios: [
+          { id: 44, name: `one ${marker}` },
+          { id: 45, name: `two ${marker}` },
+        ] });
+      },
+    });
+    const client = new MakeApiClient({
+      token: "test-token", baseUrl: "https://eu1.make.com", coordinator,
+    });
+    await expect(client.createScenario({
+      teamId: 21,
+      blueprint: {
+        name: "probe [123e4567-e89b-12d3-a456-426614174000]",
+        flow: [],
+      } as any,
+      scheduling: { type: "on-demand" },
+      confirmed: true,
+    })).rejects.toBeInstanceOf(AmbiguousCreateError);
+    expect(createCalls).toBe(1);
+  });
+
+  test("reconciles an ambiguous delete transport failure only when GET proves 404", async () => {
+    let deletes = 0;
+    let gets = 0;
+    const coordinator = new RequestCoordinator({
+      limiter: immediateLimiter(),
+      request: async (request) => {
+        if (request.method === "DELETE") {
+          deletes++;
+          throw new TypeError("socket closed after send");
+        }
+        gets++;
+        return new Response(null, { status: 404 });
+      },
+    });
+    const client = new MakeApiClient({
+      token: "test-token", baseUrl: "https://eu1.make.com", coordinator,
+    });
+    expect(await client.deleteScenario(44)).toBe(204);
+    expect({ deletes, gets }).toEqual({ deletes: 1, gets: 1 });
+  });
+
   test("diagnostic GET preserves response metadata and updates the observed organization limit", async () => {
     const requests: Array<{ method: string; path: string; organizationId: number | "unknown" }> = [];
     const client = new MakeApiClient({

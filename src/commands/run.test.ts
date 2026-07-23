@@ -35,6 +35,9 @@ function harness(overrides: Record<string, unknown> = {}) {
     parseScenarioInput: () => ({ scenarioId: 7, baseUrl: "https://eu1.make.com" }),
     cliVersion: "test",
     writeOutput: (value) => output.push(value),
+    ownership: {
+      listPending: () => [{ scenarioId: 44, lifecycleState: "inactive" }],
+    } as any,
   });
   return { program, output, get runCalls() { return runCalls; } };
 }
@@ -48,6 +51,7 @@ describe("run command", () => {
       ok: true,
       command: "run",
       data: { preview: true, scenarioId: 7, input: { name: "Ada" } },
+      meta: { pendingCleanup: [{ scenarioId: 44, lifecycleState: "inactive" }] },
     });
   });
 
