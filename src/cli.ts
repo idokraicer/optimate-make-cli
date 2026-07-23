@@ -20,6 +20,7 @@ import { registerExamplesCommand } from "./commands/examples";
 import { registerConnectionsCommand } from "./commands/connections";
 import { registerCreateCommand } from "./commands/create";
 import { registerCleanupCommand } from "./commands/cleanup";
+import { registerProbeCommand } from "./commands/probe";
 import { getDefaultOwnershipStore, type OwnershipStore } from "./probes/ownership-store";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
@@ -208,13 +209,14 @@ registerCreateCommand(program, {
       throw new InspectInputError("--team does not match the team in --from-url.");
     }
     const teamId = parsed.teamId ?? optionTeamId;
-    if (!Number.isInteger(teamId) || teamId <= 0) {
+    if (typeof teamId !== "number" || !Number.isInteger(teamId) || teamId <= 0) {
       throw new InspectInputError("create requires a positive --team ID or a team-scoped --from-url.");
     }
+    const resolvedTeamId = teamId as number;
     const configured = (await resolveCredentialsOrThrow()).preferred;
     const resolvedBaseUrl = normalizeMakeBaseUrl(parsed.baseUrl ?? baseUrl ?? configured);
     const client = await createClientOrThrow(resolvedBaseUrl);
-    const teamDetails = await client.fetchTeam(teamId);
+    const teamDetails = await client.fetchTeam(resolvedTeamId);
     const organizationId = Number(
       teamDetails.organizationId ?? teamDetails.organization?.id ?? teamDetails.organization_id,
     );
@@ -222,7 +224,11 @@ registerCreateCommand(program, {
       throw new InspectInputError("Unable to resolve the team's organization.");
     }
     await client.discoverOrganization(organizationId);
-    return { teamId, organizationId, baseUrl: resolvedBaseUrl.replace(/\/+$/, "") };
+    return {
+      teamId: resolvedTeamId,
+      organizationId,
+      baseUrl: resolvedBaseUrl.replace(/\/+$/, ""),
+    };
   },
   readBlueprint: async (path) => JSON.parse(await Bun.file(path).text()),
   ownership: ownershipStore,
@@ -242,6 +248,33 @@ registerCleanupCommand(program, {
     }
     return organizationId;
   },
+  ownership: ownershipStore,
+  cliVersion: pkg.version,
+});
+
+registerProbeCommand(program, {
+  resolveTarget: async ({ fromUrl }) => {
+    const parsed = parseMakeUrl(fromUrl);
+    if (!parsed.baseUrl || !parsed.teamId || parsed.teamId <= 0) {
+      throw new InspectInputError(
+        "probe requires a team-scoped --from-url.",
+      );
+    }
+    const baseUrl = normalizeMakeBaseUrl(parsed.baseUrl);
+    const client = await createClientOrThrow(baseUrl);
+    const team = await client.fetchTeam(parsed.teamId);
+    const organizationId = Number(
+      team.organizationId ?? team.organization?.id ?? team.organization_id,
+    );
+    if (!Number.isInteger(organizationId) || organizationId <= 0) {
+      throw new InspectInputError("Unable to resolve the team's organization.");
+    }
+    await client.discoverOrganization(organizationId);
+    return { teamId: parsed.teamId, organizationId, baseUrl };
+  },
+  createClient: createClientOrThrow,
+  readBlueprint: async (path) => JSON.parse(await Bun.file(path).text()),
+  readDataFile: async (path) => JSON.parse(await Bun.file(path).text()),
   ownership: ownershipStore,
   cliVersion: pkg.version,
 });
