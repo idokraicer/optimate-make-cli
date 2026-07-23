@@ -21,13 +21,24 @@ const records: ScenarioIndexRecord[] = [{
       version: 2,
       parameters: { connection: 44, boardId: 123 },
       mapper: { name: "Top" },
-      branches: [{ flow: [{
-        id: 2,
-        module: "monday:CreateItem",
-        version: 2,
-        parameters: { boardId: 456, connection: 45 },
-        mapper: { name: "Branch" },
-      }] }],
+      branches: [{
+        label: "Priority branch",
+        authorization: "Bearer branch-secret",
+        flow: [{
+          id: 2,
+          module: "monday:CreateItem",
+          version: 2,
+          parameters: { boardId: 456, connection: 45 },
+          mapper: { name: "Branch" },
+          filter: {
+            name: "Recovery filter",
+            conditions: {
+              token: "token-secret",
+              header: "Authorization: Bearer private",
+            },
+          },
+        }],
+      }],
       onerror: [{
         id: 3,
         module: "monday:CreateItem",
@@ -97,6 +108,71 @@ describe("module example discovery", () => {
     expect(fragment.metadata.interface).toEqual([{ name: "output", type: "text" }]);
     expect(JSON.stringify(fragment)).not.toContain("Bearer hide");
     expect(JSON.stringify(fragment)).not.toContain("accessToken");
+  });
+
+  test("signatures ignore every configured leaf value and primitive type", () => {
+    const first = {
+      id: 1,
+      module: "tools:Example",
+      version: 1,
+      parameters: {
+        scalar: 123,
+        nested: { enabled: true, nullable: null },
+        list: ["one", { count: 7 }],
+      },
+      mapper: { value: "text" },
+      metadata: { schema: { required: false } },
+    } as any;
+    const second = {
+      id: 2,
+      module: "tools:Example",
+      version: 1,
+      parameters: {
+        list: [false, { count: "seven" }],
+        nested: { nullable: "not-null", enabled: 0 },
+        scalar: null,
+      },
+      mapper: { value: 42 },
+      metadata: { schema: { required: "yes" } },
+    } as any;
+
+    expect(moduleConfigurationSignature(first)).toBe(moduleConfigurationSignature(second));
+  });
+
+  test("--full adds complete sanitized canonical context without changing default examples", () => {
+    const normal = findModuleExamples(records, { module: "monday:CreateItem" });
+    expect(normal[0]?.full).toBeUndefined();
+
+    const [full] = findModuleExamples(records, {
+      scenarioId: 20,
+      moduleId: 2,
+      full: true,
+    });
+    expect(full?.full).toMatchObject({
+      fragment: {
+        id: 2,
+        module: "monday:CreateItem",
+        parameters: { boardId: 456, connection: 45 },
+      },
+      context: {
+        path: "flow[0].branches[0].flow[0]",
+        container: "branch",
+        depth: 1,
+        parentModuleId: 1,
+        parent: {
+          path: "flow[0]",
+          id: 1,
+          module: "monday:CreateItem",
+        },
+        containerMetadata: {
+          label: "Priority branch",
+          authorization: "[REDACTED]",
+        },
+      },
+    });
+    expect(JSON.stringify(full?.full)).not.toMatch(
+      /token-secret|Bearer private|branch-secret/,
+    );
   });
 
   test("returns no examples instead of inventing a module schema", () => {
