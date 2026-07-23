@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { resolvePath, applyEdits, diffBlueprints, type BlueprintEdit, type BlueprintDiff } from "./blueprint-editor";
+import { semanticDiff } from "../utils/semantic-diff";
 
 describe("resolvePath", () => {
   const obj = {
@@ -186,10 +187,13 @@ describe("diffBlueprints", () => {
     modified.flow[0].onerror[1].routes[0].flow[0].mapper.value = "after";
 
     const diff = diffBlueprints(original as any, modified as any);
+    const semantic = semanticDiff(original as any, modified as any);
 
     expect(diff.duplicateIds).toEqual([]);
-    expect(diff.modulesModified).toEqual([5]);
+    expect(diff.modulesModified).toEqual([1, 5]);
     expect(diff.modulesModified).not.toContain(null);
+    expect(semantic.directlyModifiedModules).toEqual([5]);
+    expect(semantic.ancestorModules).toEqual([1]);
   });
 
   test("reports name change", () => {
