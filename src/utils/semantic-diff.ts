@@ -104,8 +104,6 @@ interface IdentifiedModule {
   module: Module;
 }
 
-const NESTED_MODULE_PROPERTIES = new Set(["routes", "branches", "onerror"]);
-
 function identifiedModules(blueprint: Blueprint): IdentifiedModule[] {
   const grouped = new Map<number, IdentifiedModule[]>();
   for (const walked of walkModules(blueprint.flow)) {
@@ -119,10 +117,24 @@ function identifiedModules(blueprint: Blueprint): IdentifiedModule[] {
     .map(([entry]) => entry);
 }
 
+function nullIdModules(blueprint: Blueprint): Array<Omit<IdentifiedModule, "id">> {
+  return walkModules(blueprint.flow)
+    .filter((walked) => walked.module.id === null)
+    .map((walked) => ({ path: walked.path, module: walked.module }));
+}
+
+function routeMetadata(route: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(route).filter(([key]) => key !== "flow"));
+}
+
 function ownModuleContent(module: Module): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(module).filter(([key]) => !NESTED_MODULE_PROPERTIES.has(key)),
-  );
+  return Object.fromEntries(Object.entries(module).flatMap(([key, value]) => {
+    if (key === "onerror") return [];
+    if ((key === "routes" || key === "branches") && Array.isArray(value)) {
+      return [[key, value.map((route) => routeMetadata(route as Record<string, unknown>))]];
+    }
+    return [[key, value]];
+  }));
 }
 
 function ancestorIds(path: string, modules: IdentifiedModule[]): number[] {
@@ -131,11 +143,17 @@ function ancestorIds(path: string, modules: IdentifiedModule[]): number[] {
     .map((entry) => entry.id);
 }
 
+function moduleContainerPath(path: string): string {
+  return path.replace(/\[\d+\]$/, "");
+}
+
 export function semanticDiff(before: Blueprint, after: Blueprint): SemanticDiff {
   const direct = new Set<number>();
   const ancestors = new Set<number>();
   const beforeModules = new Map(identifiedModules(before).map((entry) => [entry.id, entry]));
   const afterModules = identifiedModules(after);
+  const beforeNullModules = new Map(nullIdModules(before).map((entry) => [entry.path, entry]));
+  const afterNullModules = nullIdModules(after);
   const beforeTopLevel = { ...before } as Record<string, unknown>;
   const afterTopLevel = { ...after } as Record<string, unknown>;
   delete beforeTopLevel.flow;
@@ -149,6 +167,18 @@ export function semanticDiff(before: Blueprint, after: Blueprint): SemanticDiff 
   for (const afterModule of afterModules) {
     const beforeModule = beforeModules.get(afterModule.id);
     if (!beforeModule) continue;
+    if (moduleContainerPath(beforeModule.path) !== moduleContainerPath(afterModule.path)) {
+      direct.add(afterModule.id);
+      for (const ancestorId of ancestorIds(afterModule.path, afterModules)) {
+        ancestors.add(ancestorId);
+      }
+      changes.push({
+        path: afterModule.path,
+        moduleId: afterModule.id,
+        before: beforeModule.path,
+        after: afterModule.path,
+      });
+    }
     const moduleChanges = diffLeaves(
       ownModuleContent(beforeModule.module),
       ownModuleContent(afterModule.module),
@@ -160,6 +190,21 @@ export function semanticDiff(before: Blueprint, after: Blueprint): SemanticDiff 
       ancestors.add(ancestorId);
     }
     changes.push(...moduleChanges.map((change) => ({ ...change, moduleId: afterModule.id })));
+  }
+
+  for (const afterModule of afterNullModules) {
+    const beforeModule = beforeNullModules.get(afterModule.path);
+    if (!beforeModule) continue;
+    const moduleChanges = diffLeaves(
+      ownModuleContent(beforeModule.module),
+      ownModuleContent(afterModule.module),
+      afterModule.path,
+    );
+    if (moduleChanges.length === 0) continue;
+    for (const ancestorId of ancestorIds(afterModule.path, afterModules)) {
+      ancestors.add(ancestorId);
+    }
+    changes.push(...moduleChanges.map((change) => ({ ...change, moduleId: null })));
   }
 
   for (const moduleId of direct) ancestors.delete(moduleId);
