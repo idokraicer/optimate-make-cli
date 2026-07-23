@@ -120,9 +120,12 @@ export function applyEdits<T>(obj: T, edits: BlueprintEdit[]): T {
 export function diffBlueprints(original: Blueprint, modified: Blueprint): BlueprintDiff {
   const origModules = walkModules(original.flow);
   const modModules = walkModules(modified.flow);
+  const isNumericId = (id: number | null): id is number => typeof id === "number";
 
-  const origIds = new Set(origModules.map((m) => m.module.id));
-  const modIds = modModules.map((m) => m.module.id);
+  const origIds = new Set(
+    origModules.map(({ module }) => module.id).filter(isNumericId),
+  );
+  const modIds = modModules.map(({ module }) => module.id).filter(isNumericId);
   const modIdSet = new Set(modIds);
 
   const modulesAdded = modIds.filter((id) => !origIds.has(id));
@@ -135,9 +138,14 @@ export function diffBlueprints(original: Blueprint, modified: Blueprint): Bluepr
     seen.add(id);
   }
 
-  const origMap = new Map(origModules.map((m) => [m.module.id, m.module]));
+  const origMap = new Map(
+    origModules
+      .filter(({ module }) => isNumericId(module.id))
+      .map(({ module }) => [module.id, module]),
+  );
   const modulesModified: number[] = [];
   for (const walked of modModules) {
+    if (!isNumericId(walked.module.id)) continue;
     const orig = origMap.get(walked.module.id);
     if (orig && JSON.stringify(orig) !== JSON.stringify(walked.module)) {
       modulesModified.push(walked.module.id);

@@ -68,7 +68,12 @@ describe("walkModules", () => {
 
   test("walks nested error-handler routes", () => {
     const modules = walkModules((fixture as Blueprint).flow);
-    expect(modules.find((entry) => entry.module.id === 21)?.container).toBe("route");
+    expect(modules.find((entry) => entry.module.id === 21)).toMatchObject({
+      path: "flow[1].branches[0].flow[0].onerror[0].routes[0].flow[0]",
+      depth: 3,
+      parentModuleId: null,
+      container: "route",
+    });
   });
 
   test("can exclude error handlers", () => {
@@ -78,7 +83,10 @@ describe("walkModules", () => {
 
   test("returns every duplicate module path", () => {
     const matches = findWalkedModulesById((fixture as Blueprint).flow, 18);
-    expect(matches).toHaveLength(1);
+    expect(matches.map(({ path }) => path)).toEqual([
+      "flow[1].branches[0].flow[0]",
+      "flow[1].branches[0].flow[0].onerror[0].routes[0].flow[1]",
+    ]);
   });
 
   test("validates modules nested inside branches and error handlers", () => {

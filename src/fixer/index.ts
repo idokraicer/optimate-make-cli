@@ -150,17 +150,27 @@ function applyToModuleInFlow(
     if (mod.id === moduleId) {
       return transform(mod);
     }
-    if (Array.isArray(mod.routes)) {
-      return {
-        ...mod,
-        routes: mod.routes.map((route: any) => ({
-          ...route,
-          flow: route.flow
-            ? applyToModuleInFlow(route.flow, moduleId, transform)
-            : route.flow,
-        })),
-      };
+
+    const applyToRoutes = (routes: Module["routes"]) =>
+      Array.isArray(routes)
+        ? routes.map((route: any) => ({
+            ...route,
+            flow: Array.isArray(route.flow)
+              ? applyToModuleInFlow(route.flow, moduleId, transform)
+              : route.flow,
+          }))
+        : routes;
+
+    const routes = applyToRoutes(mod.routes);
+    const branches = applyToRoutes(mod.branches);
+    const onerror = Array.isArray(mod.onerror)
+      ? applyToModuleInFlow(mod.onerror, moduleId, transform)
+      : mod.onerror;
+
+    if (routes === mod.routes && branches === mod.branches && onerror === mod.onerror) {
+      return mod;
     }
-    return mod;
+
+    return { ...mod, routes, branches, onerror };
   });
 }
