@@ -12,8 +12,9 @@ The work is driven by the failure documented in the supplied conversation:
 - `Next ID: 18` was printed even though module 18 already existed;
 - agents had to recreate recursive inspection, dependency validation, batch
   patching, and execution polling with large PowerShell scripts;
-- a stale Monday board ID was treated as a blueprint/runtime contradiction
-  instead of being checked against the live dependency immediately;
+- a stale external-system identifier was treated as a blueprint/runtime
+  contradiction instead of being checked by running a small diagnostic
+  scenario against the real system;
 - validation described ancestor modules as modified without identifying the
   exact changed leaf fields;
 - an installed CLI/documentation mismatch caused an ISO timestamp to fail.
@@ -46,6 +47,9 @@ The work is driven by the failure documented in the supplied conversation:
 9. **Rate-limit preservation.** Proactively pace requests below the
    organization's actual API allowance, coordinate concurrent CLI processes,
    cache repeatable reads, and checkpoint long scans.
+10. **Framework-agnostic diagnostics.** Make Fixer supplies generic scenario,
+    connection, example-discovery, execution, and cleanup primitives. Provider
+    semantics belong in the probe blueprint, not in provider-specific CLI code.
 
 ## Official MCP Ideas to Reproduce Through the API
 
@@ -63,8 +67,17 @@ Make's public API exposes the required primitives:
 - `GET /api/v2/scenarios/{scenarioId}/interface`;
 - `POST /api/v2/scenarios/{scenarioId}/run`;
 - `GET /api/v2/scenarios/{scenarioId}/executions/{executionId}`;
-- scenario blueprints, scenario details, execution logs, hooks, organizations,
-  teams, and app/module metadata.
+- `POST /api/v2/scenarios`;
+- `POST /api/v2/scenarios/{scenarioId}/start`;
+- `POST /api/v2/scenarios/{scenarioId}/stop`;
+- `DELETE /api/v2/scenarios/{scenarioId}`;
+- scenario blueprints, scenario details, execution logs, connections, hooks,
+  organizations, and teams.
+
+The public API does not expose one universal configuration schema for every
+standard app module. Make Fixer therefore learns reusable module shapes from
+real blueprints already accessible to the organization. This is an explicit
+limitation, not a reason to hard-code individual providers.
 
 The current configured token was verified with a real read-only
 `GET /api/v2/organizations` request across the known zones on 2026-07-23. That
@@ -168,6 +181,11 @@ Every new command includes rate evidence in `meta.rateLimit`:
 
 Existing commands remain behavior-compatible, but their HTTP requests also use
 the shared coordinator and persistent 429 retry behavior.
+
+Endpoints that Make explicitly documents as exempt from organization request
+limits, currently `POST /scenarios/{scenarioId}/run`, do not reserve a rolling
+organization-rate slot. They still use cancellation, sanitized errors, and
+indefinite 429 handling because an upstream component may still throttle them.
 
 Tests use an injectable clock, sleep function, random source, and request
 executor so rate-limit behavior is deterministic and does not actually wait.
@@ -405,58 +423,141 @@ provenance. It never prints authorization headers or tokens.
 No feature is described as universally available based on `doctor` succeeding
 for one organization.
 
-### 8. Monday Board-ID Audit and Sync
+### 8. Organization Module Examples
 
-Add narrowly named commands:
+Add:
 
 ```bash
-make-fixer monday audit-board-ids --from-url <scenario-url>
-make-fixer monday audit-board-ids --from-url <scenario-url> --scope team
-make-fixer monday sync-board-ids --from-url <scenario-url> --scope team
-make-fixer monday sync-board-ids --from-url <scenario-url> --scope team --apply
+make-fixer examples --from-url <make-url> --module monday:getBoardItems
+make-fixer examples --from-url <make-url> --app monday
+make-fixer examples --from-url <make-url> --search "boardId"
+make-fixer examples --from-url <make-url> --scenario <id> --module-id <id> --full
 ```
 
-The Monday token is read from `MONDAY_TOKEN` in the current project environment.
-It is never copied into Make Fixer's global config.
+`examples` reuses the organization-wide incremental index and canonical
+traversal. It finds modules already used in accessible scenarios and returns
+real blueprint fragments an agent can adapt. Matching supports:
 
-The audit:
+- exact Make module name;
+- app prefix;
+- module version;
+- literal text within parameters, mapper, filters, or metadata;
+- exact scenario ID and module ID for selecting one result.
 
-1. resolves scenario/team/zone from the supplied Make URL;
-2. fetches fresh blueprints;
-3. finds every Monday module through canonical traversal;
-4. extracts literal board IDs from known mapper/parameter locations;
-5. extracts the saved board label from restore metadata;
-6. queries the current Monday API version;
-7. pages through all boards visible to that token;
-8. matches by normalized exact name, board type, active state, and visibility;
-9. classifies every reference as:
-   `valid`, `stale`, `dynamic`, `missing-label`, `no-match`,
-   `ambiguous`, `type-conflict`, or `inaccessible`.
+Search results are grouped by a deterministic configuration signature composed
+of module name, version, parameter-key shape, mapper-key shape, and metadata
+schema shape. The default result includes one representative per signature plus
+the number and locations of equivalent examples. This avoids flooding an agent
+with hundreds of copies while retaining provenance.
 
-Matching rules:
+Each representative includes scenario ID/name, team ID, module ID, exact JSON
+path, module name/version, connection references, parameters, mapper structure,
+filter structure, restore labels, and interface metadata. Values whose paths or
+keys indicate tokens, passwords, authorization headers, API keys, cookies, or
+credentials are always redacted. Ordinary resource IDs, connection IDs, field
+names, labels, URLs without credentials, and structural configuration remain
+available because the feature is intended to produce usable examples.
 
-- dynamic Make expressions are never modified;
-- only one active same-name/same-type candidate permits replacement;
-- a subitem board must match a subitem board;
-- blank or malformed saved labels never count as a match;
-- inaccessible old IDs are evidence of staleness only when the replacement is
-  otherwise unique;
-- no fuzzy matching and no guessing.
+`--full` requires an exact scenario and module selection. It returns that
+module's complete sanitized blueprint fragment and its immediate structural
+context. It never returns credentials or Make API tokens.
 
-`sync-board-ids` defaults to a read-only plan. `--apply` modifies only local
-blueprint scalar board-ID fields and writes a manifest containing every
-scenario ID, module ID, JSON path, old ID, new ID, board name, and evidence.
-It does not push.
+Examples are evidence, not a universal module catalog. If no accessible
+scenario contains the requested module, the command returns `found: false` and
+does not invent a configuration schema.
 
-Existing `validate` and `push` commands remain the remote-write path so their
-confirmation and new drift checks apply. This avoids adding a hidden batch-push
-mechanism.
+### 9. Generic Scenario Creation and Probe Lifecycle
 
-Monday API errors use the same capability/error taxonomy. A token that cannot
-list boards or an account whose API features are plan-restricted produces an
-explicit unsupported result rather than an empty-board conclusion.
+Add:
 
-### 9. Agent-Oriented Output Contract
+```bash
+make-fixer connections --from-url <make-url>
+make-fixer create --from-url <make-url> --blueprint <file> --name <name>
+make-fixer run -s <id-or-url> --data-file input.json --wait
+make-fixer probe --from-url <make-url> --blueprint <file> --data-file input.json
+make-fixer cleanup -s <id-or-url> --delete
+```
+
+`connections` lists connections visible to the URL's team using
+`GET /api/v2/connections?teamId=<id>`. It returns IDs, names, account/package
+types, scope status, and non-secret metadata. It never returns credentials.
+Agents combine these connection references with `examples` output when
+constructing a provider-specific blueprint.
+
+`create` accepts a complete local blueprint, validates it locally, forces
+on-demand scheduling, previews the exact target team/name/module count, and
+requires `--yes` before `POST /api/v2/scenarios`. The created scenario name is
+prefixed with `[make-fixer probe]` unless `--no-probe-label` is explicitly
+passed. The result persists a local ownership record containing scenario ID,
+team ID, organization ID, zone, creation time, blueprint fingerprint, creator
+process, and lifecycle state.
+
+The generic `probe` command orchestrates:
+
+1. validate the supplied blueprint and inputs locally;
+2. preview the scenario that will be created unless `--yes` is present;
+3. create an inactive, on-demand scenario in the selected team;
+4. fetch the created blueprint and interface to verify the remote state;
+5. activate only that newly created scenario;
+6. run it once and retain the returned `executionId`;
+7. poll the documented execution endpoint until `SUCCESS`, `WARNING`, or
+   `ERROR`;
+8. return configured scenario outputs or the structured execution error;
+9. fetch the blueprint again to expose interface metadata populated by the
+   real run;
+10. query module logs for per-module status and bundle counts;
+11. deactivate the scenario after the execution reaches a terminal state;
+12. leave the scenario in Make and return a cleanup decision for the agent to
+    present to the user.
+
+The public API guarantees configured scenario outputs through
+`GET /scenarios/{scenarioId}/executions/{executionId}`. Module logs expose
+operation status and bundle counts, not arbitrary intermediate bundle contents.
+Make Fixer must state this distinction. Probe blueprints should map the target
+system response into explicit scenario outputs when the agent needs the actual
+payload. A post-run blueprint interface can describe fields learned by Make,
+but it is not misrepresented as the original bundle.
+
+If the process is cancelled while its owned execution is still running,
+`probe` requests a stop for that execution and then deactivates its owned
+scenario. If stopping or deactivation cannot be confirmed, the result uses exit
+code 5 and records `cleanupRequired: true` with the exact unresolved state.
+The command never activates, stops, or deactivates a pre-existing scenario.
+
+Successful and failed probes both retain the created scenario for inspection.
+No automatic deletion occurs. The final JSON contains:
+
+```json
+{
+  "scenarioId": 7654321,
+  "executionId": "abc123",
+  "scenarioActive": false,
+  "cleanupRequired": true,
+  "cleanupOptions": [
+    "keep",
+    "delete",
+    "revise_and_rerun"
+  ],
+  "userDecisionRequired": true
+}
+```
+
+An AI agent must present those options to the user after reporting the test
+result. `cleanup --delete --yes` deletes only a scenario whose local ownership
+record and remote fingerprint both match. Drift, a missing ownership record, or
+an active/running scenario blocks deletion. `cleanup` without `--delete --yes`
+is read-only and reports the current lifecycle state.
+
+The ownership fingerprint is refreshed only after a CLI-controlled lifecycle
+operation is verified remotely, including the post-run blueprint fetch. This
+allows Make-populated interface metadata to be recorded without weakening the
+later drift check.
+
+On startup, new mutation commands check for unresolved owned probe records.
+They report them in `meta.pendingCleanup` so an interrupted agent can ask the
+user later. They do not delete or modify those scenarios automatically.
+
+### 10. Agent-Oriented Output Contract
 
 New commands return stable JSON by default. Human formatting is available with
 `--human`.
@@ -508,8 +609,9 @@ Existing commands keep their current exit behavior for backward compatibility.
 Tests use three levels:
 
 1. **Pure unit tests:** recursive traversal, schema parsing, exact module lookup,
-   semantic diffs, fingerprints, Monday matching, error classification, and
-   polling state transitions.
+   semantic diffs, fingerprints, example grouping/redaction, ownership checks,
+   error classification, probe cleanup transitions, and polling state
+   transitions.
 2. **Mock HTTP contract tests:** assert exact method, path, body, headers, and
    response parsing for each new Make API call. Tests include 401, 403 scope,
    403 plan, 404, 422, 429, 5xx, timeout-with-execution-ID, and malformed JSON.
@@ -522,7 +624,9 @@ Remote mutation verification is separate:
 
 - a real scenario run requires explicit user approval and a known safe on-demand
   scenario;
-- Monday sync testing uses audit/plan mode against live boards;
+- real create/probe verification requires explicit user approval, a selected
+  team, a harmless blueprint, and confirmation that the scenario is inactive
+  after testing;
 - no live blueprint push is required to validate local patching and drift
   detection;
 - post-write verification is mandatory whenever a remote mutation is approved.
@@ -548,10 +652,12 @@ not encoded as universal plan behavior.
 - implementing the MCP protocol or connecting to Make MCP;
 - complete parity with every Make REST resource;
 - connection, data-store, organization, or team mutation commands;
-- automatic scenario activation;
+- a universal schema catalog for every Make app module;
+- provider-specific CLI integrations or direct Monday API calls;
+- automatic deletion of probe scenarios;
+- activation, stopping, or deactivation of pre-existing scenarios by `probe`;
 - automatic replay after ambiguous timeouts;
 - automatic remote batch pushing;
-- fuzzy Monday board matching;
 - bypassing subscription, role, or token-scope restrictions.
 
 ## Success Criteria
@@ -561,10 +667,11 @@ not encoded as universal plan behavior.
    module and error-handler ID.
 3. Analysis and diffs include nested branch/error-handler modules exactly once.
 4. `inspect --module 18` returns its exact path, mapper, label, and parent.
-5. Validation identifies the precise board-ID leaf change without falsely
+5. Validation identifies a precise nested leaf change without falsely
    presenting the If/Else parent as directly edited.
-6. A stale Monday board ID produces an evidence-backed replacement plan; dynamic,
-   ambiguous, missing-label, and mismatched-type cases are never modified.
+6. `examples` finds real modules inside nested organization scenarios, groups
+   structural duplicates, preserves usable non-secret configuration, and
+   redacts credentials.
 7. `run` validates the live interface, returns an execution ID, and can poll an
    unfinished execution without resending it.
 8. `doctor` distinguishes scope/plan/auth/transient failures using sanitized real
@@ -582,5 +689,10 @@ not encoded as universal plan behavior.
     retrying until it succeeds or receives a cancellation signal.
 13. Interrupted organization scans resume from persisted checkpoints without
     refetching completed unchanged scenarios.
-14. Existing tests and command-help tests continue passing.
-15. Full `bun test` and `bun run typecheck` pass.
+14. A probe created from a harmless fixture blueprint is verified remotely,
+    run once, returns configured outputs and post-run interface evidence, and
+    is confirmed inactive afterward.
+15. The probe is retained with `userDecisionRequired: true`; deletion is
+    rejected unless ownership and remote fingerprint checks pass.
+16. Existing tests and command-help tests continue passing.
+17. Full `bun test` and `bun run typecheck` pass.
