@@ -69,6 +69,7 @@ export interface RefreshSearchIndexOptions {
   zone: string;
   fresh?: boolean;
   concurrency?: number;
+  pruneMissing?: boolean;
   now?: () => Date;
 }
 
@@ -85,16 +86,38 @@ export function sanitizeForIndex(value: unknown): unknown {
   if (typeof value === "string") return sanitizeSearchText(value);
   if (!value || typeof value !== "object") return value;
 
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+  const record = value as Record<string, unknown>;
+  const sensitivePair = [record.name, record.key, record.header]
+    .some((candidate) => typeof candidate === "string" && sensitivePairName(candidate));
+
+  return Object.fromEntries(Object.entries(record).map(([key, child]) => [
     key,
-    SENSITIVE_KEY.test(key) ? REDACTED : sanitizeForIndex(child),
+    SENSITIVE_KEY.test(key) || (sensitivePair && /^(?:value|values|content|defaultValue)$/i.test(key))
+      ? REDACTED
+      : sanitizeForIndex(child),
   ]));
+}
+
+function sensitivePairName(value: string): boolean {
+  const normalized = value.toLocaleLowerCase().replace(/[^a-z0-9]/g, "");
+  return [
+    "authorization",
+    "cookie",
+    "setcookie",
+    "xapikey",
+    "apikey",
+    "xauthtoken",
+    "session",
+    "sessionid",
+  ].includes(normalized);
 }
 
 function sanitizeSearchText(value: string): string {
   return value
     .replace(/\b(authorization|cookie)\s*:\s*[^\r\n,;]+/gi, "$1: [REDACTED]")
-    .replace(/\b(Bearer|Token)\s+[^\s,;]+/gi, "$1 [REDACTED]")
+    .replace(/\b(Basic|Bearer|Token)\s+[^\s,;]+/gi, "$1 [REDACTED]")
+    .replace(/\b(session(?:id)?=)[^;\s,]+/gi, "$1[REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9_-]+/g, "sk-[REDACTED]")
     .replace(
       /(\b[A-Za-z0-9_-]*(?:token|secret|password|credential|api[-_]?key)[A-Za-z0-9_-]*\s*[:=]\s*)[^\s,;&]+/gi,
       "$1[REDACTED]",
@@ -191,7 +214,7 @@ export async function refreshSearchIndex(
   scenarios: ScenarioSummary[],
   options: RefreshSearchIndexOptions,
 ): Promise<RefreshSearchIndexResult> {
-  const existing = options.fresh ? null : await readIndex(options.indexPath);
+  const existing = await readIndex(options.indexPath);
   const cached = new Map(
     existing?.organizationId === options.organizationId && existing.zone === options.zone
       ? existing.records.map((record) => [record.scenarioId, record])
@@ -199,7 +222,9 @@ export async function refreshSearchIndex(
   );
   const currentIds = new Set(scenarios.map((scenario) => scenario.id));
   const records = new Map<number, ScenarioIndexRecord>(
-    [...cached].filter(([scenarioId]) => currentIds.has(scenarioId)),
+    options.pruneMissing === false
+      ? cached
+      : [...cached].filter(([scenarioId]) => currentIds.has(scenarioId)),
   );
   const changed: ScenarioSummary[] = [];
   let cacheHits = 0;

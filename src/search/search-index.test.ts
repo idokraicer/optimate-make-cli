@@ -50,6 +50,28 @@ describe("search index primitives", () => {
     });
   });
 
+  test("redacts values paired with sensitive Make header names before flattening", () => {
+    const raw = blueprint("safe");
+    raw.flow[0].mapper.headers = [
+      { name: "Authorization", value: "Basic dXNlcjpwYXNz" },
+      { key: "Cookie", value: "session=private-session" },
+      { name: "X-API-Key", value: "sk-live-private" },
+      { name: "Content-Type", value: "application/json" },
+    ];
+
+    const sanitized = sanitizeForIndex(raw) as Blueprint;
+    const serialized = JSON.stringify(sanitized);
+    expect(serialized).not.toMatch(/dXNlcjpwYXNz|private-session|sk-live-private/);
+    expect(sanitized.flow[0].mapper.headers).toEqual([
+      { name: "Authorization", value: "[REDACTED]" },
+      { key: "Cookie", value: "[REDACTED]" },
+      { name: "X-API-Key", value: "[REDACTED]" },
+      { name: "Content-Type", value: "application/json" },
+    ]);
+    expect(flattenSearchDocument(sanitized).map((entry) => entry.value).join(" "))
+      .not.toMatch(/dXNlcjpwYXNz|private-session|sk-live-private/);
+  });
+
   test("flattens nested module context and matches keys, values, Hebrew, regex, and exact fields", () => {
     const entries = flattenSearchDocument(sanitizeForIndex(blueprint("Send Customer")));
     const enriched = entries.map((entry) => ({
@@ -123,7 +145,12 @@ describe("refreshSearchIndex", () => {
       fetchBlueprint: async (id: number) => {
         fetched.push(id);
         if (id === 3) throw new Error("forbidden");
-        return { blueprint: blueprint(`fresh ${id}`), raw: { secret: "must-not-persist" } };
+        const fresh = blueprint(`fresh ${id}`);
+        fresh.flow[0].mapper.headers = [
+          { name: "Authorization", value: "Basic persisted-private" },
+          { key: "X-API-Key", value: "sk-persisted-private" },
+        ];
+        return { blueprint: fresh, raw: { secret: "must-not-persist" } };
       },
       fetchNotes: async () => [],
     };
@@ -150,6 +177,39 @@ describe("refreshSearchIndex", () => {
     expect(persisted).not.toContain("removed");
     expect(persisted).not.toContain("do-not-store");
     expect(persisted).not.toContain("cache-secret");
+    expect(persisted).not.toContain("persisted-private");
     expect(persisted).toContain("[REDACTED]");
+  });
+
+  test("retains unseen cached scenarios when organization listing is incomplete", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-search-partial-list-"));
+    const path = join(directory, "index.json");
+    const unseen: ScenarioIndexRecord = {
+      scenarioId: 99,
+      scenarioName: "Unseen cached",
+      teamId: 4,
+      lastEdit: "cached",
+      sanitizedBlueprint: blueprint("retain me"),
+      entries: [],
+      indexedAt: "2026-01-01T00:00:00.000Z",
+    };
+    await Bun.write(path, JSON.stringify({
+      version: 1,
+      organizationId: 9,
+      zone: "eu1",
+      records: [unseen],
+    }));
+
+    const result = await refreshSearchIndex({
+      fetchBlueprint: async () => ({ blueprint: blueprint("seen"), raw: {} }),
+    }, [{ id: 1, name: "Seen", teamId: 4, lastEdit: "new" }], {
+      indexPath: path,
+      organizationId: 9,
+      zone: "eu1",
+      pruneMissing: false,
+    });
+
+    expect(result.records.map(({ scenarioId }) => scenarioId)).toEqual([1, 99]);
+    expect(await Bun.file(path).text()).toContain("Unseen cached");
   });
 });

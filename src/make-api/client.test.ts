@@ -27,6 +27,126 @@ describe("MakeApiClient", () => {
       "https://eu1.make.com/api/v2/organizations/9",
     ]);
   });
+
+  test("lists every organization scenario with the documented 1000-item page size", async () => {
+    const urls: string[] = [];
+    const firstPage = Array.from({ length: 1000 }, (_, index) => ({
+      id: index + 1,
+      name: `Scenario ${index + 1}`,
+    }));
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      organizationId: 9,
+      coordinator: {
+        request: async (url) => {
+          const value = String(url);
+          urls.push(value);
+          if (value.endsWith("/api/v2/organizations/9")) {
+            return Response.json({ organization: { id: 9, license: { apiLimit: 60 } } });
+          }
+          const offset = Number(new URL(value).searchParams.get("pg[offset]"));
+          return offset === 0
+            ? Response.json({ scenarios: firstPage, pg: { offset: 0, limit: 1000, total: 1001 } })
+            : Response.json({ scenarios: [{ id: 1001, name: "Last" }], pg: { offset: 1000, limit: 1000, total: 1001 } });
+        },
+      },
+    });
+
+    const result = await client.listAllScenarios({ organizationId: 9 });
+    expect(result.complete).toBe(true);
+    expect(result.scenarios).toHaveLength(1001);
+    expect(result.pages.map((page) => page.pagination)).toEqual([
+      { offset: 0, limit: 1000, total: 1001 },
+      { offset: 1000, limit: 1000, total: 1001 },
+    ]);
+    expect(urls.filter((url) => url.includes("/api/v2/scenarios?"))).toEqual([
+      "https://eu1.make.com/api/v2/scenarios?organizationId=9&pg%5Blimit%5D=1000&pg%5Boffset%5D=0",
+      "https://eu1.make.com/api/v2/scenarios?organizationId=9&pg%5Blimit%5D=1000&pg%5Boffset%5D=1000",
+    ]);
+  });
+
+  test("returns completed pages and failure metadata when a later scenario page fails", async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, index) => ({ id: index + 1 }));
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async (url) => {
+          const value = String(url);
+          if (value.endsWith("/api/v2/organizations/9")) {
+            return Response.json({ organization: { id: 9, license: { apiLimit: 60 } } });
+          }
+          const offset = Number(new URL(value).searchParams.get("pg[offset]"));
+          return offset === 0
+            ? Response.json({ scenarios: firstPage, pg: { total: 1001 } })
+            : new Response("temporary", { status: 503 });
+        },
+      },
+    });
+
+    const result = await client.listAllScenarios({ organizationId: 9 });
+    expect(result.scenarios).toHaveLength(1000);
+    expect(result).toMatchObject({ complete: false, failedOffset: 1000 });
+  });
+
+  test("configured organization IDs still load details unless details or a valid rate cache exist", async () => {
+    const urls: string[] = [];
+    const coordinator = {
+      request: async (url: string | URL) => {
+        const value = String(url);
+        urls.push(value);
+        return value.endsWith("/api/v2/organizations/9")
+          ? Response.json({ organization: { id: 9, license: { apiLimit: 60 } } })
+          : Response.json({ scenarios: [] });
+      },
+      getRateLimitSnapshot: () => ({
+        documentedRpm: null,
+        effectiveRpm: 30,
+        limitSource: "fallback" as const,
+        requestsSent: 0,
+        retries: 0,
+        cooldownMs: 0,
+      }),
+      setOrganizationLimit: () => undefined,
+    };
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      organizationId: 9,
+      coordinator,
+    });
+
+    await client.listScenarios({ organizationId: 9 });
+    await client.listScenarios({ organizationId: 9 });
+    expect(urls.filter((url) => url.endsWith("/api/v2/organizations/9"))).toHaveLength(1);
+  });
+
+  test("a valid coordinator organization-limit cache avoids redundant detail loading", async () => {
+    const urls: string[] = [];
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      organizationId: 9,
+      coordinator: {
+        request: async (url) => {
+          urls.push(String(url));
+          return Response.json({ scenarios: [] });
+        },
+        getRateLimitSnapshot: () => ({
+          documentedRpm: 60,
+          effectiveRpm: 57,
+          limitSource: "cache",
+          requestsSent: 0,
+          retries: 0,
+          cooldownMs: 0,
+        }),
+      },
+    });
+
+    await client.listScenarios({ organizationId: 9 });
+    expect(urls).toEqual(["https://eu1.make.com/api/v2/scenarios?organizationId=9"]);
+  });
   test("discovers team organization limit and uses effective 57 RPM in the organization bucket", async () => {
     const requests: Array<{ url: string; context: RequestContext }> = [];
     const snapshots = new Map<number | "unknown", RateLimitSnapshot>();

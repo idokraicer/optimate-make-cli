@@ -46,12 +46,30 @@ export interface OrganizationDetails {
   [key: string]: unknown;
 }
 
+export const SCENARIO_PAGE_SIZE = 1000;
+
+export interface ScenarioListPage {
+  scenarios: any[];
+  offset: number;
+  count: number;
+  pagination: Record<string, unknown> | null;
+}
+
+export interface ScenarioListResult {
+  scenarios: any[];
+  pages: ScenarioListPage[];
+  complete: boolean;
+  failedOffset: number | null;
+  failedStatus?: number | null;
+}
+
 export class MakeApiClient {
   private token: string;
   private baseUrl: string;
   private organizationId: number | "unknown";
   private coordinator?: RequestCoordinatorLike;
   private documentedRpm: number | null = null;
+  private organizationDetailsLoaded = false;
 
   constructor(config: MakeApiConfig) {
     this.token = config.token;
@@ -135,8 +153,25 @@ export class MakeApiClient {
   }
 
   private useOrganization(organizationId: number): void {
-    if (this.organizationId !== organizationId) this.documentedRpm = null;
+    if (this.organizationId !== organizationId) {
+      this.documentedRpm = null;
+      this.organizationDetailsLoaded = false;
+    }
     this.organizationId = organizationId;
+  }
+
+  private hasValidOrganizationRateContext(organizationId: number): boolean {
+    if (this.organizationId !== organizationId) return false;
+    if (this.organizationDetailsLoaded) return true;
+    this.coordinator ??= getDefaultRequestCoordinator();
+    const snapshot = this.coordinator.getRateLimitSnapshot?.(this.rateBucket(organizationId));
+    return snapshot?.documentedRpm != null && snapshot.limitSource !== "fallback";
+  }
+
+  private async ensureOrganizationDetails(organizationId: number): Promise<void> {
+    this.useOrganization(organizationId);
+    if (this.hasValidOrganizationRateContext(organizationId)) return;
+    await this.discoverOrganization(organizationId);
   }
 
   getRateLimitSnapshot(): RateLimitSnapshot {
@@ -178,6 +213,7 @@ export class MakeApiClient {
     }
     const data = await res.json();
     const organization = data.organization ?? data;
+    this.organizationDetailsLoaded = true;
     const apiLimit = Number(organization?.license?.apiLimit);
     if (Number.isFinite(apiLimit) && apiLimit > 0) {
       this.documentedRpm = Math.floor(apiLimit);
@@ -354,11 +390,78 @@ export class MakeApiClient {
     limit?: number;
     offset?: number;
   }): Promise<any[]> {
-    if (opts.organizationId != null && this.organizationId !== opts.organizationId) {
-      await this.discoverOrganization(opts.organizationId);
+    if (opts.organizationId != null) {
+      await this.ensureOrganizationDetails(opts.organizationId);
     } else if (opts.teamId != null) {
       await this.discoverOrganizationForTeam(opts.teamId);
     }
+    return (await this.fetchScenarioPage(opts)).scenarios;
+  }
+
+  async listScenariosPage(opts: {
+    teamId?: number;
+    organizationId?: number;
+    isActive?: boolean;
+    folderId?: number;
+    limit?: number;
+    offset?: number;
+  }): Promise<ScenarioListPage> {
+    if (opts.organizationId != null) {
+      await this.ensureOrganizationDetails(opts.organizationId);
+    } else if (opts.teamId != null) {
+      await this.discoverOrganizationForTeam(opts.teamId);
+    }
+    return this.fetchScenarioPage(opts);
+  }
+
+  async listAllScenarios(opts: {
+    teamId?: number;
+    organizationId?: number;
+    isActive?: boolean;
+    folderId?: number;
+  }): Promise<ScenarioListResult> {
+    if (opts.organizationId != null) {
+      await this.ensureOrganizationDetails(opts.organizationId);
+    } else if (opts.teamId != null) {
+      await this.discoverOrganizationForTeam(opts.teamId);
+    }
+
+    const scenarios: any[] = [];
+    const pages: ScenarioListPage[] = [];
+    let offset = 0;
+    while (true) {
+      try {
+        const page = await this.fetchScenarioPage({
+          ...opts,
+          limit: SCENARIO_PAGE_SIZE,
+          offset,
+        });
+        pages.push(page);
+        scenarios.push(...page.scenarios);
+        if (!hasNextScenarioPage(page, scenarios.length)) {
+          return { scenarios, pages, complete: true, failedOffset: null };
+        }
+        offset += SCENARIO_PAGE_SIZE;
+      } catch (error) {
+        return {
+          scenarios,
+          pages,
+          complete: false,
+          failedOffset: offset,
+          failedStatus: statusFromClientError(error),
+        };
+      }
+    }
+  }
+
+  private async fetchScenarioPage(opts: {
+    teamId?: number;
+    organizationId?: number;
+    isActive?: boolean;
+    folderId?: number;
+    limit?: number;
+    offset?: number;
+  }): Promise<ScenarioListPage> {
     const params = new URLSearchParams();
     if (opts.teamId != null) params.set("teamId", String(opts.teamId));
     if (opts.organizationId != null) params.set("organizationId", String(opts.organizationId));
@@ -375,7 +478,14 @@ export class MakeApiClient {
       throw new Error(`Make API list scenarios error ${res.status}: ${await res.text()}`);
     }
     const data = await res.json();
-    return Array.isArray(data.scenarios) ? data.scenarios : [];
+    const scenarios = Array.isArray(data.scenarios) ? data.scenarios : [];
+    const pagination = paginationMetadata(data);
+    return {
+      scenarios,
+      offset: opts.offset ?? 0,
+      count: scenarios.length,
+      pagination,
+    };
   }
 
   async fetchScenario(scenarioId: number): Promise<any> {
@@ -467,4 +577,33 @@ export class MakeApiClient {
       );
     });
   }
+}
+
+function paginationMetadata(data: any): Record<string, unknown> | null {
+  const value = data?.pg ?? data?.pagination;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function hasNextScenarioPage(page: ScenarioListPage, fetchedCount: number): boolean {
+  if (page.count < SCENARIO_PAGE_SIZE) return false;
+  const pagination = page.pagination;
+  if (!pagination) return true;
+
+  const explicit = pagination.hasNextPage ?? pagination.hasNext ?? pagination.hasMore;
+  if (typeof explicit === "boolean") return explicit;
+
+  const total = Number(pagination.total ?? pagination.totalCount);
+  if (Number.isFinite(total) && total >= 0) return fetchedCount < total;
+
+  const nextOffset = Number(pagination.nextOffset);
+  if (Number.isFinite(nextOffset)) return nextOffset > page.offset;
+  return true;
+}
+
+function statusFromClientError(error: unknown): number | null {
+  if (!(error instanceof Error)) return null;
+  const match = error.message.match(/\berror\s+(\d{3})\b/i);
+  return match ? Number(match[1]) : null;
 }

@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Command } from "commander";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { registerSearchCommand } from "./search";
 
 describe("search command", () => {
@@ -43,9 +46,14 @@ describe("search command", () => {
         calls.push(`organization:${organizationId}`);
         return { id: organizationId, license: { apiLimit: 60 } };
       },
-      listScenarios: async ({ organizationId }: { organizationId: number }) => {
+      listAllScenarios: async ({ organizationId }: { organizationId: number }) => {
         calls.push(`scenarios:${organizationId}`);
-        return [{ id: 1, name: "One", teamId: 7, lastEdit: "now" }];
+        return {
+          scenarios: [{ id: 1, name: "One", teamId: 7, lastEdit: "now" }],
+          pages: [{ scenarios: [], pagination: null }],
+          complete: true,
+          failedOffset: null,
+        };
       },
       fetchBlueprint: async () => ({ blueprint: {
         name: "One",
@@ -84,7 +92,7 @@ describe("search command", () => {
       "--fresh",
     ], { from: "user" });
 
-    expect(calls).toEqual(["team:7", "organization:99", "scenarios:99"]);
+    expect(calls).toEqual(["team:7", "scenarios:99"]);
     expect(output[0]).toMatchObject({
       ok: true,
       command: "search",
@@ -97,7 +105,101 @@ describe("search command", () => {
       },
       meta: {
         source: "organization_index",
-        rate: { documentedRpm: 60, effectiveRpm: 57 },
+        rateLimit: {
+          organizationId: 99,
+          documentedRpm: 60,
+          effectiveRpm: 57,
+          cacheHits: 0,
+          checkpointed: true,
+        },
+      },
+    });
+    expect(output[0].meta.rate).toBeUndefined();
+    expect(output[0].meta.cache).toBeUndefined();
+    expect(output[0].meta.rateLimit).toEqual({
+      organizationId: 99,
+      documentedRpm: 60,
+      effectiveRpm: 57,
+      limitSource: "organization_api",
+      requestsSent: 4,
+      cacheHits: 0,
+      retries: 0,
+      cooldownMs: 0,
+      checkpointed: true,
+    });
+  });
+
+  test("surfaces an incomplete listing and retains unseen cached organization records", async () => {
+    const indexRoot = mkdtempSync(join(tmpdir(), "make-fixer-search-command-partial-"));
+    const indexDirectory = join(indexRoot, "eu1", "99");
+    mkdirSync(indexDirectory, { recursive: true });
+    await Bun.write(join(indexDirectory, "index.json"), JSON.stringify({
+      version: 1,
+      organizationId: 99,
+      zone: "eu1",
+      records: [{
+        scenarioId: 88,
+        scenarioName: "Cached",
+        teamId: 7,
+        lastEdit: "old",
+        sanitizedBlueprint: { name: "Cached", flow: [] },
+        entries: [{
+          scenarioId: 88,
+          scenarioName: "Cached",
+          teamId: 7,
+          moduleId: null,
+          moduleType: null,
+          path: "scenario.name",
+          key: "name",
+          value: "Cached",
+        }],
+        indexedAt: "2026-01-01T00:00:00.000Z",
+      }],
+    }));
+    const output: any[] = [];
+    const program = new Command().exitOverride();
+    registerSearchCommand(program, {
+      cliVersion: "test",
+      createClient: async () => ({
+        fetchOrganization: async () => ({ id: 99 }),
+        listAllScenarios: async () => ({
+          scenarios: [],
+          pages: [],
+          complete: false,
+          failedOffset: 0,
+        }),
+        fetchBlueprint: async () => {
+          throw new Error("must retain cache without fetching");
+        },
+        getScenarioUrl: (id: number) => `https://eu1.make.com/api/v2/scenarios/${id}`,
+        getRateLimitSnapshot: () => ({
+          documentedRpm: 60,
+          effectiveRpm: 57,
+          limitSource: "organization_api",
+          requestsSent: 2,
+          retries: 0,
+          cooldownMs: 0,
+        }),
+      } as any),
+      parseMakeUrl: () => ({ organizationId: 99, baseUrl: "https://eu1.make.com" }),
+      indexRoot,
+      writeOutput: (value) => output.push(value),
+    });
+
+    await program.parseAsync([
+      "search",
+      "--from-url",
+      "https://eu1.make.com/organization/99/dashboard",
+      "--query",
+      "cached",
+    ], { from: "user" });
+
+    expect(output[0]).toMatchObject({
+      ok: true,
+      data: {
+        incomplete: true,
+        listing: { complete: false, failedOffset: 0 },
+        matches: [{ scenarioId: 88 }],
       },
     });
   });
