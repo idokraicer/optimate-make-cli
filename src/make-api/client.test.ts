@@ -1,10 +1,64 @@
 import { describe, expect, test } from "bun:test";
-import { MakeApiClient } from "./client";
+import { MakeApiClient, ScenarioRunRequestError } from "./client";
 import { MakeAppSchema, AppModuleSchema } from "./types";
 import type { RequestContext } from "./request-coordinator";
 import type { RateBucket, RateLimitSnapshot } from "./rate-limiter";
 
 describe("MakeApiClient", () => {
+  test("uses documented interface, run, and execution endpoints with only run rate-exempt", async () => {
+    const requests: Array<{ url: string; init: RequestInit; context: RequestContext }> = [];
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async (url, init, context) => {
+          requests.push({ url: String(url), init, context });
+          if (String(url).endsWith("/interface")) return Response.json({ interface: { input: [], output: [] } });
+          if (String(url).endsWith("/run")) return Response.json({ executionId: "e1", status: "RUNNING" });
+          return Response.json({ execution: { status: "SUCCESS", outputs: { value: 1 } } });
+        },
+      },
+    });
+
+    expect(await client.fetchScenarioInterface(7)).toEqual({ input: [], output: [] });
+    expect(await client.runScenario(7, { data: {}, responsive: true })).toMatchObject({ executionId: "e1" });
+    expect(await client.fetchExecutionDetails(7, "e1")).toEqual({
+      status: "SUCCESS",
+      outputs: { value: 1 },
+    });
+    expect(requests.map(({ url }) => url)).toEqual([
+      "https://eu1.make.com/api/v2/scenarios/7/interface",
+      "https://eu1.make.com/api/v2/scenarios/7/run",
+      "https://eu1.make.com/api/v2/scenarios/7/executions/e1",
+    ]);
+    expect(requests.map(({ context }) => context.organizationRateExempt)).toEqual([
+      undefined, true, undefined,
+    ]);
+    expect(requests[1].init.method).toBe("POST");
+    expect(JSON.parse(String(requests[1].init.body))).toEqual({ data: {}, responsive: true });
+  });
+
+  test("preserves an execution ID assigned in an unsuccessful run response", async () => {
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async () => Response.json(
+          { executionId: "e-timeout", message: "provider private detail" },
+          { status: 408 },
+        ),
+      },
+    });
+
+    try {
+      await client.runScenario(7, { responsive: true });
+      throw new Error("Expected runScenario to reject");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ScenarioRunRequestError);
+      expect(error).toMatchObject({ executionId: "e-timeout", httpStatus: 408 });
+      expect((error as Error).message).not.toContain("provider private detail");
+    }
+  });
   test("fetches documented team and organization details", async () => {
     const urls: string[] = [];
     const client = new MakeApiClient({
