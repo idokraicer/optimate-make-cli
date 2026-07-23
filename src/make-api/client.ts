@@ -6,6 +6,7 @@ import {
   type Note,
   type MakeApp,
   type AppModule,
+  type ConnectionSummary,
 } from "./types";
 import { BUILTIN_MODULES } from "../data/builtin-modules";
 import {
@@ -24,6 +25,7 @@ import type {
   ExecutionDetails,
   ScenarioInterface,
 } from "./scenario-runner";
+import { sanitizeForIndex } from "../search/search-index";
 
 export interface MakeApiConfig {
   token: string;
@@ -508,6 +510,58 @@ export class MakeApiClient {
     }
   }
 
+  async listConnections(teamId: number): Promise<ConnectionSummary[]> {
+    if (!Number.isInteger(teamId) || teamId <= 0) {
+      throw new Error("teamId must be a positive integer.");
+    }
+    await this.discoverOrganizationForTeam(teamId);
+
+    const connections: ConnectionSummary[] = [];
+    let offset = 0;
+    let limit: number | null = null;
+    while (true) {
+      const params = new URLSearchParams({ teamId: String(teamId) });
+      if (limit !== null) {
+        params.set("pg[limit]", String(limit));
+        params.set("pg[offset]", String(offset));
+      }
+      const response = await this.request(
+        `${this.baseUrl}/api/v2/connections?${params.toString()}`,
+      );
+      if (!response.ok) {
+        throw new Error(`Make API list connections error ${response.status}: ${await response.text()}`);
+      }
+      const data = await response.json();
+      const page = Array.isArray(data.connections) ? data.connections : [];
+      connections.push(...page.flatMap((connection: unknown) => {
+        const summary = connectionSummary(connection, teamId);
+        return summary ? [summary] : [];
+      }));
+
+      const pagination = paginationMetadata(data);
+      const total = finiteNumber(pagination?.total);
+      const pageLimit = finiteNumber(pagination?.limit);
+      const pageOffset = finiteNumber(pagination?.offset) ?? offset;
+      const explicitMore = pagination?.hasNextPage
+        ?? pagination?.hasNext
+        ?? pagination?.hasMore;
+      const nextOffset = finiteNumber(pagination?.nextOffset);
+      const hasMore = typeof explicitMore === "boolean"
+        ? explicitMore
+        : total !== null
+          ? pageOffset + page.length < total
+          : nextOffset !== null
+            ? nextOffset > pageOffset
+            : pageLimit !== null && pageLimit > 0 && page.length >= pageLimit;
+      if (!hasMore || pageLimit === null || pageLimit <= 0) {
+        break;
+      }
+      offset = nextOffset ?? pageOffset + pageLimit;
+      limit = pageLimit;
+    }
+    return connections.sort((left, right) => left.id - right.id);
+  }
+
   private async fetchScenarioPage(opts: {
     teamId?: number;
     organizationId?: number;
@@ -761,6 +815,37 @@ function paginationMetadata(data: any): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function connectionSummary(value: unknown, requestedTeamId: number): ConnectionSummary | null {
+  if (!isObject(value)) return null;
+  const id = Number(value.id);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const responseTeamId = Number(value.teamId ?? value.team?.id ?? requestedTeamId);
+  if (responseTeamId !== requestedTeamId) return null;
+  return {
+    id,
+    name: stringValue(value.name),
+    accountName: stringValue(value.accountName ?? value.account?.name),
+    accountLabel: stringValue(value.accountLabel ?? value.account?.label),
+    packageName: nullableString(value.packageName ?? value.package?.name),
+    teamId: requestedTeamId,
+    scoped: value.scoped === true,
+    metadata: sanitizeForIndex(value.metadata ?? {}),
+  };
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function hasNextScenarioPage(page: ScenarioListPage, fetchedCount: number): boolean {

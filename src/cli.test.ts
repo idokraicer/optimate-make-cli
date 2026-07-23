@@ -83,6 +83,26 @@ function expectInspectFailure(result: { stdout: string; stderr: string; code: nu
 }
 
 describe("CLI commands", () => {
+  test("CLI exposes organization examples and scoped connections discovery", async () => {
+    const examples = Bun.spawn(["bun", "src/cli.ts", "examples", "--help"], {
+      stdout: "pipe",
+      env: { ...process.env, MAKE_FIXER_NO_UPDATE: "1" },
+    });
+    const connections = Bun.spawn(["bun", "src/cli.ts", "connections", "--help"], {
+      stdout: "pipe",
+      env: { ...process.env, MAKE_FIXER_NO_UPDATE: "1" },
+    });
+    const [examplesHelp, connectionsHelp] = await Promise.all([
+      new Response(examples.stdout).text(),
+      new Response(connections.stdout).text(),
+    ]);
+    expect(examplesHelp).toContain("reusable module configurations");
+    expect(examplesHelp).toContain("--module-id");
+    expect(examplesHelp).toContain("--full");
+    expect(connectionsHelp).toContain("team-scoped connections");
+    expect(connectionsHelp).toContain("--from-url");
+  });
+
   test("CLI exposes read-only capability diagnostics", async () => {
     const proc = Bun.spawn(["bun", "src/cli.ts", "doctor", "--help"], {
       stdout: "pipe",

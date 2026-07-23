@@ -16,6 +16,8 @@ import { InspectInputError, registerInspectCommand } from "./commands/inspect";
 import { registerSearchCommand } from "./commands/search";
 import { registerRunCommand } from "./commands/run";
 import { registerDoctorCommand } from "./commands/doctor";
+import { registerExamplesCommand } from "./commands/examples";
+import { registerConnectionsCommand } from "./commands/connections";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
@@ -165,6 +167,18 @@ registerDoctorCommand(program, {
   parseMakeUrl,
   parseScenarioInput: parseInspectScenarioInput,
   configuredBaseUrl: async () => (await resolveCredentialsOrThrow()).preferred,
+  cliVersion: pkg.version,
+});
+
+registerExamplesCommand(program, {
+  createClient: createClientOrThrow,
+  parseMakeUrl,
+  cliVersion: pkg.version,
+});
+
+registerConnectionsCommand(program, {
+  createClient: createClientOrThrow,
+  parseMakeUrl,
   cliVersion: pkg.version,
 });
 
