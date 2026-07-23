@@ -83,6 +83,23 @@ function expectInspectFailure(result: { stdout: string; stderr: string; code: nu
 }
 
 describe("CLI commands", () => {
+  test("CLI has organization search command with agent-safe controls", async () => {
+    const proc = Bun.spawn(["bun", "src/cli.ts", "search", "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).toContain("Search every scenario blueprint in an organization");
+    expect(stdout).toContain("--from-url");
+    expect(stdout).toContain("--organization");
+    expect(stdout).toContain("--query");
+    expect(stdout).toContain("--regex");
+    expect(stdout).toContain("--field");
+    expect(stdout).toContain("--value");
+    expect(stdout).toContain("--case-sensitive");
+    expect(stdout).toContain("--fresh");
+    expect(stdout).toContain("--human");
+  });
   test("scenario URL resolution discovers team and organization details before production calls", async () => {
     const directory = mkdtempSync(join(tmpdir(), "make-fixer-cli-rate-"));
     const preload = join(directory, "mock-fetch.ts");

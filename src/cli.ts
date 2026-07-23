@@ -13,6 +13,7 @@ import { diffBlueprints } from "./agent/blueprint-editor";
 import { fingerprintBlueprint } from "./utils/blueprint-fingerprint";
 import { semanticDiff, type SemanticDiff } from "./utils/semantic-diff";
 import { InspectInputError, registerInspectCommand } from "./commands/inspect";
+import { registerSearchCommand } from "./commands/search";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
@@ -142,6 +143,12 @@ registerInspectCommand(program, {
   resolveClient: resolveClientOrThrow,
   parseScenarioInput: parseInspectScenarioInput,
   readLocalBlueprint: readInspectLocalBlueprint,
+  cliVersion: pkg.version,
+});
+
+registerSearchCommand(program, {
+  createClient: createClientOrThrow,
+  parseMakeUrl,
   cliVersion: pkg.version,
 });
 

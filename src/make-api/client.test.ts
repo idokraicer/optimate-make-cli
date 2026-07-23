@@ -5,6 +5,28 @@ import type { RequestContext } from "./request-coordinator";
 import type { RateBucket, RateLimitSnapshot } from "./rate-limiter";
 
 describe("MakeApiClient", () => {
+  test("fetches documented team and organization details", async () => {
+    const urls: string[] = [];
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async (url) => {
+          urls.push(String(url));
+          return String(url).includes("/teams/")
+            ? Response.json({ team: { id: 7, organizationId: 9, name: "Ops" } })
+            : Response.json({ organization: { id: 9, name: "Acme", license: { apiLimit: 60 } } });
+        },
+      },
+    });
+
+    expect(await client.fetchTeam(7)).toMatchObject({ id: 7, organizationId: 9 });
+    expect(await client.fetchOrganization(9)).toMatchObject({ id: 9, license: { apiLimit: 60 } });
+    expect(urls).toEqual([
+      "https://eu1.make.com/api/v2/teams/7",
+      "https://eu1.make.com/api/v2/organizations/9",
+    ]);
+  });
   test("discovers team organization limit and uses effective 57 RPM in the organization bucket", async () => {
     const requests: Array<{ url: string; context: RequestContext }> = [];
     const snapshots = new Map<number | "unknown", RateLimitSnapshot>();
