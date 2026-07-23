@@ -645,7 +645,7 @@ export class MakeApiClient {
         }
       : async () => undefined;
     let res = await this.request(
-      `${this.baseUrl}/api/v2/scenarios`,
+      `${this.baseUrl}/api/v2/scenarios?confirmed=true`,
       { method: "POST", body: JSON.stringify(body) },
       {
         retryTransientResponses: false,
@@ -676,7 +676,9 @@ export class MakeApiClient {
   async deleteScenario(scenarioId: number, signal?: AbortSignal): Promise<number> {
     const reconcile = async (): Promise<Response | undefined> => {
       const check = await this.request(this.getScenarioUrl(scenarioId), {}, { signal });
-      if (check.status === 404) return new Response(null, { status: 204 });
+      if (check.status === 404) {
+        return Response.json({ scenario: scenarioId }, { status: 200 });
+      }
       return undefined;
     };
     let res = await this.request(
@@ -691,7 +693,12 @@ export class MakeApiClient {
     );
     if (res.status === 503) res = await reconcile() ?? res;
     if (!res.ok) throw new Error(`Make API delete scenario error ${res.status}.`);
-    return res.status;
+    const data = await readJsonSafely(res);
+    const deletedScenarioId = Number(data?.scenario?.id ?? data?.scenario ?? data?.id);
+    if (!Number.isInteger(deletedScenarioId) || deletedScenarioId <= 0) {
+      throw new Error("Make API delete scenario response did not include the deleted scenario ID.");
+    }
+    return deletedScenarioId;
   }
 
   private async mutateScenarioState(
@@ -709,7 +716,9 @@ export class MakeApiClient {
       },
     );
     if (!res.ok) throw new Error(`Make API ${action} scenario error ${res.status}.`);
-    return normalizeScenarioDetails(responsePayload(await readJsonSafely(res)));
+    // The documented mutation response is intentionally partial
+    // ({ id, isActive, islinked }); return the public full-detail contract.
+    return this.fetchScenarioDetails(scenarioId);
   }
 
   async fetchScenarioInterface(

@@ -55,6 +55,12 @@ export function registerCleanupCommand(program: Command, dependencies: CleanupDe
         const reasons: string[] = [];
         if (!owned) reasons.push("No ownership record exists for this exact zone and scenario.");
         if (owned?.lifecycleState === "deleted") reasons.push("The ownership record is already deleted.");
+        if (owned && (
+          !owned.remoteVerifiedAt
+          || Number.isNaN(Date.parse(owned.remoteVerifiedAt))
+        )) {
+          reasons.push("The owned scenario has not been remotely verified.");
+        }
         if (owned && normalizeBaseUrl(owned.baseUrl) !== baseUrl) {
           reasons.push("The owned zone does not match.");
         }

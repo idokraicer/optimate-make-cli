@@ -88,6 +88,7 @@ describe("create command", () => {
       teamId: 21,
       organizationId: 9,
       lifecycleState: "verified",
+      remoteVerifiedAt: expect.any(String),
     });
     expect((h.output[0] as any).meta.pendingCleanup).toHaveLength(1);
   });
@@ -118,6 +119,7 @@ describe("create command", () => {
     expect(h.records[0]).toMatchObject({
       scenarioId: 44,
       lifecycleState: "created",
+      remoteVerifiedAt: null,
       operationId: "123e4567-e89b-12d3-a456-426614174000",
     });
     expect(h.output[0]).toMatchObject({
