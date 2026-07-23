@@ -7,6 +7,46 @@ import type { Blueprint } from "./make-api/types";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import ifElseBlueprint from "../tests/fixtures/if-else-blueprint.json";
+
+async function runInspect(
+  args: string[],
+  options: { cwd?: string; preload?: string; token?: string } = {},
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  const command = ["bun"];
+  if (options.preload) command.push("--preload", options.preload);
+  command.push(join(process.cwd(), "src/cli.ts"), "inspect", ...args);
+
+  const proc = Bun.spawn(command, {
+    cwd: options.cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      ...process.env,
+      MAKE_FIXER_NO_UPDATE: "1",
+      MAKE_FIXER_RATE_DB: join(options.cwd ?? tmpdir(), "inspect-rate.sqlite"),
+      ...(options.token ? { MAKE_API_TOKEN: options.token } : {}),
+    },
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, code };
+}
+
+function expectInspectFailure(result: { stdout: string; stderr: string; code: number }): any {
+  expect(result.code).toBe(1);
+  expect(result.stderr).toBe("");
+  const output = JSON.parse(result.stdout);
+  expect(output).toMatchObject({
+    ok: false,
+    command: "inspect",
+    error: { code: "INVALID_DATA", retryable: false },
+  });
+  return output;
+}
 
 describe("CLI commands", () => {
   test("scenario URL resolution discovers team and organization details before production calls", async () => {
@@ -95,6 +135,111 @@ describe("CLI commands", () => {
     expect(stdout).toContain("--summary");
     expect(stdout).toContain("--local");
     expect(stdout).toContain("--human");
+  });
+
+  test("inspect fetches remote by default and emits one JSON envelope", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-inspect-remote-"));
+    const preload = join(directory, "mock-fetch.ts");
+    await Bun.write(preload, `
+      globalThis.fetch = async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/api/v2/teams/2186253")) {
+          return Response.json({ team: { id: 2186253, organizationId: 8430514 } });
+        }
+        if (url.endsWith("/api/v2/organizations/8430514")) {
+          return Response.json({ organization: { id: 8430514, license: { apiLimit: 60 } } });
+        }
+        if (url.endsWith("/api/v2/scenarios/6648651/blueprint")) {
+          return Response.json(${JSON.stringify({ blueprint: JSON.stringify(simpleBlueprint) })});
+        }
+        return new Response("not found", { status: 404 });
+      };
+    `);
+
+    const result = await runInspect([
+      "-s",
+      "https://eu1.make.com/2186253/scenarios/6648651/edit",
+      "--summary",
+    ], { cwd: directory, preload, token: "fake" });
+    rmSync(directory, { recursive: true, force: true });
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout);
+    expect(output).toMatchObject({
+      ok: true,
+      command: "inspect",
+      data: { scenarioId: 6648651, source: "remote", summary: { moduleCount: 4 } },
+    });
+  });
+
+  test("inspect --local never fetches and emits one JSON envelope", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-inspect-local-"));
+    await Bun.write(join(directory, "blueprints/6648651.json"), JSON.stringify(simpleBlueprint));
+
+    const result = await runInspect(["-s", "6648651", "--summary", "--local"], { cwd: directory });
+    rmSync(directory, { recursive: true, force: true });
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      command: "inspect",
+      data: { scenarioId: 6648651, source: "local", summary: { moduleCount: 4 } },
+    });
+  });
+
+  test("inspect option and local-file errors always emit stable JSON failures", async () => {
+    const cases = [
+      { args: ["--summary"], message: "A scenario ID or Make.com URL is required." },
+      { args: ["-s", "not-an-id", "--summary"], message: '"not-an-id" is not a valid scenario ID or Make.com URL.' },
+      { args: ["-s", "1", "--module", "abc"], message: "--module must be a positive integer." },
+      { args: ["-s", "1", "--module", "0"], message: "--module must be a positive integer." },
+      { args: ["-s", "1", "--module", "1", "--summary"], message: "Choose exactly one of --module or --summary." },
+      { args: ["-s", "1"], message: "Choose exactly one of --module or --summary." },
+      { args: ["-s", "1", "--summary", "--local"], message: "Local blueprint not found at blueprints/1.json" },
+    ];
+
+    for (const testCase of cases) {
+      const output = expectInspectFailure(await runInspect(testCase.args));
+      expect(output.error.message).toBe(testCase.message);
+    }
+  });
+
+  test("inspect rejects duplicates and sanitizes remote fetch failures", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "make-fixer-inspect-duplicate-"));
+    await Bun.write(join(directory, "blueprints/6648651.json"), JSON.stringify(ifElseBlueprint));
+    const duplicate = expectInspectFailure(await runInspect([
+      "-s", "6648651", "--summary", "--local",
+    ], { cwd: directory }));
+    rmSync(directory, { recursive: true, force: true });
+
+    expect(duplicate.error.message).toBe("Blueprint contains duplicate module IDs.");
+    expect(duplicate.error.duplicates).toEqual({
+      "18": [
+        "flow[1].branches[0].flow[0]",
+        "flow[1].branches[0].flow[0].onerror[0].routes[0].flow[1]",
+      ],
+    });
+
+    const failedDirectory = mkdtempSync(join(tmpdir(), "make-fixer-inspect-fetch-failure-"));
+    const preload = join(failedDirectory, "mock-fetch.ts");
+    await Bun.write(preload, `
+      globalThis.fetch = async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/api/v2/teams/2186253")) return Response.json({ team: { organizationId: 8430514 } });
+        if (url.endsWith("/api/v2/organizations/8430514")) return Response.json({ organization: { license: { apiLimit: 60 } } });
+        if (url.endsWith("/blueprint")) return new Response("Token super-secret", { status: 400 });
+        return new Response("not found", { status: 404 });
+      };
+    `);
+    const remoteFailure = expectInspectFailure(await runInspect([
+      "-s", "https://eu1.make.com/2186253/scenarios/6648651/edit", "--summary",
+    ], { preload, token: "fake" }));
+    rmSync(failedDirectory, { recursive: true, force: true });
+
+    expect(remoteFailure.error.message).toBe("Unable to inspect scenario.");
+    expect(remoteFailure.error.message).not.toContain("super-secret");
   });
 
   test("CLI has push command", async () => {

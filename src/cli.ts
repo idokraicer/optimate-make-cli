@@ -10,7 +10,7 @@ import { filterDataFlow } from "./analyzer/checks/data-flow";
 import { applyFixes } from "./fixer/index";
 import { formatReport, formatJson } from "./reporter/index";
 import { diffBlueprints } from "./agent/blueprint-editor";
-import { registerInspectCommand } from "./commands/inspect";
+import { InspectInputError, registerInspectCommand } from "./commands/inspect";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
 import { findModuleById, extractInterface, buildResumeModule } from "./utils/resume-builder";
@@ -136,8 +136,8 @@ program
 
 registerInspectCommand(program, {
   resolveClient,
-  parseScenarioInput,
-  readLocalBlueprint,
+  parseScenarioInput: parseInspectScenarioInput,
+  readLocalBlueprint: readInspectLocalBlueprint,
   cliVersion: pkg.version,
 });
 
@@ -1076,7 +1076,7 @@ function parseMakeUrl(input: string): {
 
 function parseScenarioInput(input: string): { scenarioId: number; teamId?: number; baseUrl?: string } {
   const parsed = parseMakeUrl(input);
-  if (parsed.scenarioId != null) {
+  if (parsed.scenarioId != null && parsed.scenarioId > 0) {
     return { scenarioId: parsed.scenarioId, teamId: parsed.teamId, baseUrl: parsed.baseUrl };
   }
 
@@ -1085,6 +1085,23 @@ function parseScenarioInput(input: string): { scenarioId: number; teamId?: numbe
   if (isNaN(id)) {
     console.error(`Error: "${input}" is not a valid scenario ID or Make.com URL.`);
     process.exit(1);
+  }
+  return { scenarioId: id };
+}
+
+function parseInspectScenarioInput(input: unknown): { scenarioId: number; teamId?: number; baseUrl?: string } {
+  if (typeof input !== "string" || input.trim().length === 0) {
+    throw new InspectInputError("A scenario ID or Make.com URL is required.");
+  }
+
+  const parsed = parseMakeUrl(input);
+  if (parsed.scenarioId != null) {
+    return { scenarioId: parsed.scenarioId, teamId: parsed.teamId, baseUrl: parsed.baseUrl };
+  }
+
+  const id = Number(input);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new InspectInputError(`"${input}" is not a valid scenario ID or Make.com URL.`);
   }
   return { scenarioId: id };
 }
@@ -1260,6 +1277,15 @@ async function readLocalBlueprint(scenarioId: number): Promise<Blueprint> {
 
   const raw = await file.json();
   return BlueprintSchema.parse(raw);
+}
+
+async function readInspectLocalBlueprint(scenarioId: number): Promise<Blueprint> {
+  const filePath = `${BLUEPRINTS_DIR}/${scenarioId}.json`;
+  const file = Bun.file(filePath);
+  if (!(await file.exists())) {
+    throw new InspectInputError(`Local blueprint not found at ${filePath}`);
+  }
+  return BlueprintSchema.parse(await file.json());
 }
 
 function printBlueprintSummary(blueprint: Blueprint): void {
