@@ -25,7 +25,7 @@ interface BoundedResponseText {
   truncated: boolean;
 }
 
-const SENSITIVE_KEY = /(?:authorization|token|api[-_]?key|cookie|secret)/i;
+const SENSITIVE_KEY = /(?:authorization|token|api[-_]?key|cookie|secret|password|credential)/i;
 
 function classifyStatus(status: number): Pick<ClassifiedApiError, "code" | "retryable"> {
   if (status === 401) return { code: "AUTH_INVALID", retryable: false };
@@ -83,7 +83,7 @@ async function readBoundedResponseText(response: Response): Promise<BoundedRespo
   }
 
   return {
-    text: new TextDecoder().decode(body).slice(0, MAX_PROVIDER_MESSAGE_LENGTH),
+    text: new TextDecoder().decode(body),
     truncated,
   };
 }
@@ -103,6 +103,10 @@ function sanitizeProviderValue(value: unknown): unknown {
 
 function sanitizeProviderText(text: string): string {
   return text
+    .replace(
+      /(authorization\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n;,}\]]+)/gi,
+      "$1[REDACTED]",
+    )
     .replace(/\b(Bearer|Token)\s+[^\s,;]+/gi, "$1 [REDACTED]")
     .replace(
       /(["']?(?:authorization|token|api[-_]?key|x[-_]?api[-_]?key|cookie|set-cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
@@ -129,7 +133,10 @@ function firstValueAtPaths(value: unknown, paths: string[]): unknown {
 
 function providerMessage(payload: unknown, fallback: string): string {
   const message = firstValueAtPaths(payload, ["message", "error.message", "detail", "description", "error"]);
-  if (message === undefined) return fallback;
+  if (message === undefined) {
+    const serialized = JSON.stringify(sanitizeProviderValue(payload));
+    return serialized === undefined ? fallback : serialized.slice(0, MAX_PROVIDER_MESSAGE_LENGTH);
+  }
 
   if (typeof message === "string") return sanitizeProviderText(message).slice(0, MAX_PROVIDER_MESSAGE_LENGTH);
   return JSON.stringify(sanitizeProviderValue(message)).slice(0, MAX_PROVIDER_MESSAGE_LENGTH);
@@ -161,7 +168,9 @@ export async function classifyApiResponse(response: Response): Promise<Classifie
     code,
     message: payload === undefined ? fallback : providerMessage(payload, fallback),
     httpStatus: response.status || null,
-    providerCode: typeof providerCode === "string" ? sanitizeProviderText(providerCode) : null,
+    providerCode: typeof providerCode === "string"
+      ? sanitizeProviderText(providerCode).slice(0, MAX_PROVIDER_MESSAGE_LENGTH)
+      : null,
     retryable,
   };
 }
