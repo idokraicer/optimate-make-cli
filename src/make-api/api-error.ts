@@ -20,6 +20,14 @@ export interface ClassifiedApiError {
   retryable: boolean;
 }
 
+/** Carries an already-classified, redacted Make API failure to command output. */
+export class MakeApiRequestError extends Error {
+  constructor(readonly apiError: ClassifiedApiError) {
+    super(apiError.message);
+    this.name = "MakeApiRequestError";
+  }
+}
+
 interface BoundedResponseText {
   text: string;
   truncated: boolean;

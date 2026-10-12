@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AmbiguousCreateError, MakeApiClient, ScenarioRunRequestError } from "./client";
+import { MakeApiRequestError } from "./api-error";
 import { MakeAppSchema, AppModuleSchema } from "./types";
 import type { RequestContext } from "./request-coordinator";
 import type { RateBucket, RateLimitSnapshot } from "./rate-limiter";
@@ -155,6 +156,35 @@ describe("MakeApiClient", () => {
       confirmed: true,
     })).rejects.toBeInstanceOf(AmbiguousCreateError);
     expect(createCalls).toBe(1);
+  });
+
+  test("rejects a refused create with the classified, redacted provider error", async () => {
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async () => Response.json(
+          { message: "Invalid blueprint", code: "IM005", token: "abc123" },
+          { status: 400 },
+        ),
+      },
+    });
+    const rejection = await client.createScenario({
+      teamId: 21,
+      blueprint: { name: "probe", flow: [] } as any,
+      scheduling: { type: "on-demand" },
+      confirmed: true,
+    }).catch((error) => error);
+
+    expect(rejection).toBeInstanceOf(MakeApiRequestError);
+    expect(rejection.apiError).toMatchObject({
+      code: "INVALID_DATA",
+      httpStatus: 400,
+      providerCode: "IM005",
+      retryable: false,
+    });
+    expect(rejection.apiError.message).toContain("Invalid blueprint");
+    expect(JSON.stringify(rejection.apiError)).not.toContain("abc123");
   });
 
   test("reconciles an ambiguous delete transport failure only when GET proves 404", async () => {
