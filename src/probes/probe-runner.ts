@@ -230,10 +230,30 @@ export async function runOwnedProbe(
   } finally {
     if (scenarioId !== null) {
       if (!terminal && executionId !== null) {
-        try {
-          await deps.client.stopScenarioExecution(scenarioId, executionId, true);
-        } catch {
-          cleanupFailed = true;
+        // A failed run request can still leave a finished execution; report it
+        // rather than force-stopping something Make has already ended.
+        // Cancellation stops immediately without polling.
+        let stillRunning = true;
+        if (!isAbortError(primaryError)) {
+          try {
+            const current = await deps.client.fetchExecutionDetails(scenarioId, executionId);
+            if (current.status !== "RUNNING") {
+              stillRunning = false;
+              terminal = true;
+              executionStatus = normalizeTerminalStatus(current.status);
+              outputs = isRecord(current.outputs) ? current.outputs : null;
+              executionError = current.error ?? null;
+            }
+          } catch {
+            // Fall through to the forced stop when the execution state is unknown.
+          }
+        }
+        if (stillRunning) {
+          try {
+            await deps.client.stopScenarioExecution(scenarioId, executionId, true);
+          } catch {
+            cleanupFailed = true;
+          }
         }
       }
       try {
