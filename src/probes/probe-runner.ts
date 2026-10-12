@@ -70,7 +70,7 @@ export async function runOwnedProbe(
 ): Promise<ProbeResult> {
   const baseUrl = request.baseUrl.replace(/\/+$/, "");
   const now = deps.now ?? (() => new Date().toISOString());
-  const operationId = (deps.randomUUID ?? crypto.randomUUID)();
+  const operationId = deps.randomUUID?.() ?? crypto.randomUUID();
   const ownedName = `[make-fixer probe] ${request.name.trim() || "Untitled"} [${operationId}]`;
   const sentBlueprint: Blueprint = {
     ...request.blueprint,

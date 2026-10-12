@@ -223,6 +223,13 @@ describe("runOwnedProbe", () => {
     });
   });
 
+  test("generates an operation ID with the platform crypto when none is injected", async () => {
+    const h = harness();
+    const { randomUUID: _injected, ...dependencies } = h.dependencies;
+    const result = await runOwnedProbe(dependencies, request());
+    expect(result.scenarioId).toBe(44);
+  });
+
   test("does not write ownership or compensate when creation fails", async () => {
     const h = harness({
       createScenario: async () => {
