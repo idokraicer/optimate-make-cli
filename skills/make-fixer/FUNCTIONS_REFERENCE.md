@@ -14,12 +14,17 @@ Complete reference for all inline functions available in Make.com scenarios. Eac
 - Array indexing is **1-based** in `get()`, **0-based** in `slice()`
 - Module output references: `{{moduleId.fieldName}}` (e.g., `{{1.phone}}`)
 - Fallback pattern: `{{ifempty(1.phone; "")}}`
-- Logical operator pills in exported blueprints use symbols: AND is `{{&}}`, OR is `{{|}}`. Do NOT spell them as `{{and}}` or `{{or}}`. For NOT or other internal operator tokens, verify by creating the expression in Make and exporting the blueprint.
+- Logical operator pills in exported blueprints use symbols: AND is `{{&}}`, OR is `{{|}}`. Do NOT spell them as `{{and}}` or `{{or}}` — the words `AND`/`OR` do not parse. For NOT or other internal operator tokens, verify by creating the expression in Make and exporting the blueprint.
+- Straight quotes only (never typographic). No inline JSON objects and no `set()` function.
+- An invented or misspelled function **saves fine and fails every run** with "Unknown function".
+- Reference forms (`{{1.x}}`, backticks, whole bundle ``{{`1`}}``) and mapping gotchas: [references/mapping.md](references/mapping.md).
 
 ### Non-existent functions — NEVER use these
 
 These do NOT exist in Make.com. Using them will cause errors:
 `dateDifference`, `startOfDay`, `endOfDay`, `toBoolean`, `toNumber`, `log`, `ln`, `values`
+
+**Day boundaries** (instead of `startOfDay`/`endOfDay`): `{{formatDate(now; "YYYY-MM-DD")}}T00:00:00Z` and `…T23:59:59Z`.
 
 **To calculate days between dates**, use: `{{round((2.value - 1.value) / 1000 / 60 / 60 / 24)}}`
 
@@ -81,7 +86,7 @@ Make automatically converts types when there's a mismatch:
 | `average` | `average([array])` or `average(val1; val2; ...)` | number | Arithmetic mean |
 | `ceil` | `ceil(number)` | integer | Round up to nearest integer |
 | `floor` | `floor(number)` | integer | Round down to nearest integer |
-| `formatNumber` | `formatNumber(number; decimals; [decSep]; [thousandsSep])` | text | Format with separators. Default: `,` decimal, `.` thousands |
+| `formatNumber` | `formatNumber(number; decimals; [decSep]; [thousandsSep])` | text | Format with separators. Default: `,` decimal, `.` thousands — **always pass both separators explicitly** |
 | `max` | `max([array])` or `max(val1; val2; ...)` | number | Largest value |
 | `median` | `median([array])` or `median(val1; val2; ...)` | number | Middle value |
 | `min` | `min([array])` or `min(val1; val2; ...)` | number | Smallest value |
@@ -119,7 +124,7 @@ Make automatically converts types when there's a mismatch:
 | `lower` | `lower(text)` | text | Convert to lowercase |
 | `md5` | `md5(text)` | text | MD5 hash |
 | `replace` | `replace(text; searchString; replacement)` | text | Replace occurrences. Supports regex: `replace(text; "/pattern/g"; emptystring)`. **Note:** To replace with nothing, use the keyword `emptystring` — an empty string `""` does NOT work as replacement |
-| `replaceEmojiCharacters` | `replaceEmojiCharacters(text)` | text | Replace emoji characters |
+| `replaceEmojiCharacters` | `replaceEmojiCharacters(text; replacement)` | text | Replace emoji characters with `replacement` |
 | `sha1` | `sha1(text; [encoding]; [key])` | text | SHA-1 hash. Encoding: hex, base64, latin1 |
 | `sha256` | `sha256(text; [encoding]; [key]; [keyEncoding])` | text | SHA-256 hash |
 | `sha512` | `sha512(text; [encoding]; [key]; [keyEncoding])` | text | SHA-512 hash |
@@ -173,6 +178,13 @@ These variables are available anywhere in expressions (no parentheses):
 |----------|-------------|
 | `newline` | Literal line break character. Use in `replace()` to swap line breaks: `replace(text; newline; "<br />")` |
 | `emptystring` | Truly empty output — not `""`, not `null`. Use to make values disappear entirely. |
+| `emptyarray` | An empty array |
+| `space`, `tab`, `nbsp`, `carriagereturn` | Literal whitespace characters |
+| `uuid` | A fresh random UUID |
+| `executionId` | The current execution's ID — handy in error alerts and "Name a run" |
+| `ignore` | Treat the field as empty (the module does not send it) |
+| `erase` | Explicitly clear the field's value in the target app |
+| `null`, `true`, `false` | Literal values |
 
 ### Useful Date Formulas
 
@@ -358,64 +370,9 @@ function myFunction(param1, param2) {
 
 ## Filter Operators
 
-[Live docs](https://help.make.com/filtering.md)
-
-Filters are placed between modules to control data flow. Each condition has: operand(s) + operator.
-
-### Text Operators
-All text codes are lowercase. Append `:ci` for case-insensitive matching (e.g. `text:equal:ci`, `text:contain:ci`).
-
-| Operator | Code | Description |
-|----------|------|-------------|
-| Equal to | `text:equal` | Exact match |
-| Not equal to | `text:notequal` | Not exact match |
-| Contains | `text:contain` | Substring match |
-| Does not contain | `text:notcontain` | No substring match |
-| Starts with | `text:startswith` | Prefix match |
-| Ends with | `text:endswith` | Suffix match |
-| Matches pattern (regex) | *(confirm in Make UI — see note)* | Regex match |
-
-### Numeric Operators
-Use the `number:` prefix — **not** `numeric:`.
-
-| Operator | Code | Description |
-|----------|------|-------------|
-| Equal to | `number:equal` | Exact numeric match |
-| Not equal to | `number:notequal` | Not equal |
-| Greater than | `number:greater` | `>` |
-| Greater than or equal | `number:greaterorequal` | `>=` |
-| Less than | `number:less` | `<` |
-| Less than or equal | `number:lessorequal` | `<=` |
-
-### Date Operators
-| Operator | Code | Description |
-|----------|------|-------------|
-| Before | `date:before` | Earlier than |
-| After | `date:after` | Later than |
-| Between | `date:between` | Within a range |
-
-### Boolean Operators
-| Operator | Code | Description |
-|----------|------|-------------|
-| Equal to | `boolean:equal` | Boolean match |
-| Not equal to | `boolean:notequal` | Boolean mismatch |
-
-### Array Operators
-| Operator | Code | Description |
-|----------|------|-------------|
-| Contains | `array:contain` | Array includes value |
-
-### Existence Operators
-No `type:` prefix and no `b` value.
-
-| Operator | Code | Description |
-|----------|------|-------------|
-| Exists | `exist` | Field has a value |
-| Does not exist | `notexist` | Field is empty |
-
-> **Casing & prefix matter — a malformed code is silently accepted but never matches.** Make does NOT use camelCase, the `numeric:` prefix, or `boolean:exist`. Broken codes seen in the wild: `notExist`, `greaterOrEqual`, `text:startsWith`, `text:contains`, `numeric:greater`, bare `equal`/`greater`. Use the lowercase codes above.
->
-> **Regex operator:** Make's UI has a "matches pattern (regex)" text operator, but its exact `o` code isn't documented in any authoritative source. Confirm it by adding the filter once in the Make editor and exporting the blueprint to read the `o` value — don't guess.
+Filter operator codes (`text:equal`, `number:greater`, `exist`, …) are listed in **one place only**:
+[references/blueprint-format.md](references/blueprint-format.md#filter-operators). A wrong code saves fine
+and never matches.
 
 ---
 
