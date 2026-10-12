@@ -188,7 +188,12 @@ async function normalizeReplayableRequest(
   source: string | URL | Request,
   init: RequestInit,
 ): Promise<ReplayableRequestTemplate> {
-  const nativeRequest = new Request(source, init);
+  // Bun reads `keepalive` from a Request source and rejects it alongside that
+  // source's ReadableStream body, so buffer the source body before rebuilding.
+  const nativeInit = source instanceof Request && source.body !== null && init.body === undefined
+    ? { ...init, body: await source.clone().arrayBuffer() }
+    : init;
+  const nativeRequest = new Request(source, nativeInit);
   const initValues = init as RequestInit & Record<string, unknown>;
   const sourceValues = source instanceof Request
     ? source as Request & Record<string, unknown>
