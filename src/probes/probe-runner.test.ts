@@ -314,7 +314,8 @@ describe("runOwnedProbe", () => {
       scenarioId: 44,
       lifecycleState: "inactive",
     }]);
-    expect(h.order).toContain("stop scenario");
+    expect(h.order).not.toContain("stop scenario");
+    expect(h.order).toContain("verify inactive");
   });
 
   test("does not depend on a post-create legacy put to retain cleanup ownership", async () => {
@@ -375,6 +376,29 @@ describe("runOwnedProbe", () => {
     }
     expect(h.order).not.toContain("run once");
     expect(h.order).toContain("stop scenario");
+    expect(h.ownership.listPending()[0]).toMatchObject({ lifecycleState: "inactive" });
+  });
+
+  test("confirms inactivity without a stop request when the probe was never started", async () => {
+    const h = harness({
+      stopScenario: async () => {
+        h.order.push("stop scenario");
+        throw new Error("Make API stop scenario error 400.");
+      },
+    });
+    const rejection = await runOwnedProbe(h.dependencies, {
+      ...request(),
+      data: { unexpected: "input" },
+    }).catch((error) => error);
+
+    expect(rejection).not.toBeInstanceOf(ProbeCleanupError);
+    expect(rejection).toMatchObject({
+      message: "Probe input does not match the created scenario interface.",
+      result: { scenarioId: 44, scenarioActive: false, userDecisionRequired: true },
+    });
+    expect(h.order).not.toContain("start");
+    expect(h.order).not.toContain("stop scenario");
+    expect(h.order).toContain("verify inactive");
     expect(h.ownership.listPending()[0]).toMatchObject({ lifecycleState: "inactive" });
   });
 

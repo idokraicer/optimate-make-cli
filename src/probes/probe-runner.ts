@@ -87,6 +87,7 @@ export async function runOwnedProbe(
   let terminal = false;
   let primaryError: unknown = null;
   let cleanupFailed = false;
+  let mayBeActive = false;
 
   // Open the durable store before the first remote mutation.
   deps.ownership.listPending();
@@ -115,6 +116,7 @@ export async function runOwnedProbe(
     });
     scenarioId = created.id;
     scenarioActive = created.isActive;
+    mayBeActive = created.isActive !== false;
 
     // A pre-existing row means this ID cannot safely be claimed or mutated.
     if (deps.ownership.get(baseUrl, scenarioId)) {
@@ -152,6 +154,7 @@ export async function runOwnedProbe(
 
     throwIfAborted(request.signal);
     scenarioActive = null;
+    mayBeActive = true;
     const started = await deps.client.startScenario(scenarioId, request.signal);
     if (!started.isActive) throw new Error("Make did not confirm probe activation.");
     scenarioActive = true;
@@ -235,7 +238,8 @@ export async function runOwnedProbe(
       }
       try {
         scenarioActive = null;
-        await deps.client.stopScenario(scenarioId);
+        // Only stop a probe that may be active; inactivity is verified below either way.
+        if (mayBeActive) await deps.client.stopScenario(scenarioId);
         const inactive = await deps.client.fetchScenarioDetails(scenarioId);
         if (inactive.isActive || inactive.iswaiting) {
           throw new Error("Make did not confirm probe deactivation.");
