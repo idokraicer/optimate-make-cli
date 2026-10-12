@@ -1,0 +1,39 @@
+{
+  "name": "Make Fixer verification",
+  "flow": [
+    {
+      "id": 1,
+      "module": "util:SetVariables",
+      "version": 1,
+      "mapper": {
+        "variables": [
+          { "name": "echo", "value": "hello probe" },
+          { "name": "length", "value": "{{length(\"hello probe\")}}" }
+        ],
+        "scope": "roundtrip"
+      },
+      "metadata": { "designer": { "x": 0, "y": 0, "name": "Build Probe Output" } }
+    },
+    {
+      "id": 2,
+      "module": "scenario-service:ReturnData",
+      "version": 2,
+      "mapper": { "echo": "{{1.echo}}", "length": "{{1.length}}" },
+      "parameters": {},
+      "metadata": {
+        "designer": { "x": 300, "y": 0, "name": "Return Probe Output" },
+        "expect": [
+          { "name": "echo", "type": "text", "label": "" },
+          { "name": "length", "type": "text", "label": "" }
+        ],
+        "restore": {}
+      }
+    }
+  ],
+  "metadata": {
+    "instant": false,
+    "version": 1,
+    "scenario": { "roundtrips": 1, "maxErrors": 3, "autoCommit": true, "autoCommitTriggerLast": true, "sequential": false, "confidential": false, "dataloss": false, "dlq": false, "freshVariables": false },
+    "designer": { "orphans": [] }
+  }
+}
