@@ -151,7 +151,23 @@ function providerMessage(payload: unknown, fallback: string): string {
     return serialized === undefined ? fallback : serialized.slice(0, MAX_PROVIDER_MESSAGE_LENGTH);
   }
 
-  if (typeof message === "string") return sanitizeProviderText(message).slice(0, MAX_PROVIDER_MESSAGE_LENGTH);
+  if (typeof message === "string") {
+    // Make often pairs a generic message with the actionable detail and suberrors.
+    const detail = firstValueAtPaths(payload, ["detail"]);
+    const rawSuberrors = valueAtPath(payload, "suberrors");
+    const suberrors = Array.isArray(rawSuberrors)
+      ? rawSuberrors.flatMap((suberror: unknown) => {
+          const suberrorMessage = valueAtPath(suberror, "message");
+          return typeof suberrorMessage === "string" ? [suberrorMessage] : [];
+        })
+      : [];
+    const extra = [
+      ...(typeof detail === "string" && detail !== message ? [detail] : []),
+      ...suberrors,
+    ].join(" ");
+    const combined = extra ? `${message}: ${extra}` : message;
+    return sanitizeProviderText(combined).slice(0, MAX_PROVIDER_MESSAGE_LENGTH);
+  }
   return JSON.stringify(sanitizeProviderValue(message)).slice(0, MAX_PROVIDER_MESSAGE_LENGTH);
 }
 
