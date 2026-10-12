@@ -11,6 +11,7 @@ import {
 } from "../probes/probe-runner";
 import { sanitizeForIndex } from "../search/search-index";
 import { fingerprintBlueprint } from "../utils/blueprint-fingerprint";
+import { MakeApiRequestError } from "../make-api/api-error";
 import { successEnvelope } from "./output";
 
 type ProbeClient = Pick<
@@ -138,6 +139,9 @@ export function registerProbeCommand(
       } catch (error) {
         const cleanupFailure = isCleanupFailure(error);
         const partialResult = probeResultFromError(error);
+        const apiError = !cleanupFailure && error instanceof MakeApiRequestError
+          ? error.apiError
+          : null;
         emit({
           ok: false,
           command: "probe",
@@ -153,10 +157,12 @@ export function registerProbeCommand(
                 ? error.message
                 : isAbortError(error)
                   ? "The probe was cancelled."
-                  : "The owned probe could not be completed.",
-            httpStatus: null,
-            providerCode: null,
-            retryable: false,
+                  : apiError
+                    ? `The owned probe could not be completed: ${apiError.message}`
+                    : "The owned probe could not be completed.",
+            httpStatus: apiError?.httpStatus ?? null,
+            providerCode: apiError?.providerCode ?? null,
+            retryable: apiError?.retryable ?? false,
           },
           ...(partialResult ? { data: sanitizeForIndex(partialResult) } : {}),
           meta: {

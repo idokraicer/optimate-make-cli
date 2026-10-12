@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Command } from "commander";
 import { registerProbeCommand } from "./probe";
+import { MakeApiRequestError } from "../make-api/api-error";
 
 const blueprint = {
   name: "Probe",
@@ -207,5 +208,34 @@ describe("probe command", () => {
       },
     });
     expect(JSON.stringify(h.output[0])).not.toContain("private detail");
+  });
+
+  test("reports the classified Make API error when creation is refused", async () => {
+    const error = new MakeApiRequestError({
+      code: "INVALID_DATA",
+      message: "Invalid blueprint",
+      httpStatus: 400,
+      providerCode: "IM005",
+      retryable: false,
+    });
+    const h = harness({ runProbe: async () => { throw error; } });
+    await h.program.parseAsync([
+      "probe",
+      "--from-url", "https://eu1.make.com/21/scenarios/1/edit",
+      "--blueprint", "probe.json",
+      "--name", "Output probe",
+      "--yes",
+    ], { from: "user" });
+    expect(h.output[0]).toMatchObject({
+      ok: false,
+      error: {
+        code: "PROBE_FAILED",
+        message: "The owned probe could not be completed: Invalid blueprint",
+        httpStatus: 400,
+        providerCode: "IM005",
+        retryable: false,
+      },
+    });
+    expect(h.output[0].data).toBeUndefined();
   });
 });

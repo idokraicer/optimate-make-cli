@@ -23,7 +23,11 @@ import {
   type RateBucket,
   type RateLimitSnapshot,
 } from "./rate-limiter";
-import type { ApiErrorCode } from "./api-error";
+import {
+  classifyApiResponse,
+  MakeApiRequestError,
+  type ApiErrorCode,
+} from "./api-error";
 import type {
   ExecutionDetails,
   ScenarioInterface,
@@ -660,7 +664,7 @@ export class MakeApiClient {
       },
     );
     if (res.status === 503) res = await reconcile() ?? res;
-    if (!res.ok) throw new Error(`Make API create scenario error ${res.status}.`);
+    if (!res.ok) throw new MakeApiRequestError(await classifyApiResponse(res));
     return normalizeScenarioDetails(responsePayload(await readJsonSafely(res)));
   }
 
