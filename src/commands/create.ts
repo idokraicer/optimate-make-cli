@@ -51,7 +51,6 @@ export function registerCreateCommand(program: Command, dependencies: CreateDepe
         const blueprint: Blueprint = {
           ...parsed.data,
           name,
-          scheduling: { type: "on-demand" },
         };
         const client = await dependencies.createClient(resolved.baseUrl);
         const preview = {
