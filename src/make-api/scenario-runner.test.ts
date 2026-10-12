@@ -5,6 +5,7 @@ import {
   validateScenarioInput,
   type ScenarioInterface,
 } from "./scenario-runner";
+import { ExecutionNotFoundError } from "./client";
 
 const spec: ScenarioInterface = {
   input: [
@@ -109,6 +110,36 @@ describe("execution polling", () => {
     });
     expect(result).toEqual({ status: "SUCCESS", outputs: { result: 42 } });
     expect(delays).toEqual([250]);
+  });
+
+  test("keeps polling while a just-started execution is not yet visible (404)", async () => {
+    const responses: Array<() => any> = [
+      () => { throw new ExecutionNotFoundError("e"); },
+      () => { throw new ExecutionNotFoundError("e"); },
+      () => ({ status: "SUCCESS" as const }),
+    ];
+    const result = await pollScenarioExecution({
+      scenarioId: 1,
+      executionId: "exec-1",
+      timeoutMs: 60_000,
+      fetchExecutionDetails: async () => responses.shift()!(),
+      sleep: async () => {},
+      now: (() => {
+        let now = 0;
+        return () => now += 100;
+      })(),
+    });
+    expect(result).toEqual({ status: "SUCCESS" });
+  });
+
+  test("still fails fast on other polling errors", async () => {
+    await expect(pollScenarioExecution({
+      scenarioId: 1,
+      executionId: "exec-1",
+      timeoutMs: 60_000,
+      fetchExecutionDetails: async () => { throw new Error("Make API fetch execution details error 500"); },
+      sleep: async () => {},
+    })).rejects.toThrow("500");
   });
 
   test("uses bounded exponential delays and retains execution ID on timeout", async () => {

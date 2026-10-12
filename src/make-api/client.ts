@@ -28,9 +28,10 @@ import {
   MakeApiRequestError,
   type ApiErrorCode,
 } from "./api-error";
-import type {
-  ExecutionDetails,
-  ScenarioInterface,
+import {
+  ExecutionNotFoundError,
+  type ExecutionDetails,
+  type ScenarioInterface,
 } from "./scenario-runner";
 import { sanitizeForIndex } from "../search/search-index";
 
@@ -799,6 +800,7 @@ export class MakeApiClient {
       {},
       { signal },
     );
+    if (res.status === 404) throw new ExecutionNotFoundError(executionId);
     if (!res.ok) {
       throw new Error(`Make API fetch execution details error ${res.status}: ${await res.text()}`);
     }
@@ -948,6 +950,8 @@ export class MakeApiClient {
     });
   }
 }
+
+export { ExecutionNotFoundError };
 
 export class ScenarioRunRequestError extends Error {
   constructor(

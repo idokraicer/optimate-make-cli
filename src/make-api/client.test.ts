@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AmbiguousCreateError, MakeApiClient, ScenarioRunRequestError } from "./client";
+import { AmbiguousCreateError, ExecutionNotFoundError, MakeApiClient, ScenarioRunRequestError } from "./client";
 import { MakeApiRequestError } from "./api-error";
 import { MakeAppSchema, AppModuleSchema } from "./types";
 import type { RequestContext } from "./request-coordinator";
@@ -635,6 +635,19 @@ describe("MakeApiClient", () => {
     });
     expect(await client.fetchExecutionDetails(7, "e-warning")).toEqual({ status: "WARNING" });
     expect(await client.fetchExecutionDetails(7, "e-error")).toEqual({ status: "ERROR" });
+  });
+  test("reports a not-yet-visible execution as ExecutionNotFoundError", async () => {
+    // Observed live: right after POST /run, GET /executions/{id} answers 404 for a moment.
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async () => Response.json({ message: "Resource not found", code: "SC404" }, { status: 404 }),
+      },
+    });
+    const error = await client.fetchExecutionDetails(7, "e-new").catch((e) => e);
+    expect(error).toBeInstanceOf(ExecutionNotFoundError);
+    expect(error.httpStatus).toBe(404);
   });
   test("fetches documented team and organization details", async () => {
     const urls: string[] = [];

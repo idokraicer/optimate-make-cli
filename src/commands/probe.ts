@@ -9,6 +9,7 @@ import {
   type ProbeRequest,
   type ProbeResult,
 } from "../probes/probe-runner";
+import type { ExecutionData } from "../mcp/execution-data";
 import { sanitizeForIndex } from "../search/search-index";
 import { fingerprintBlueprint } from "../utils/blueprint-fingerprint";
 import { MakeApiRequestError } from "../make-api/api-error";
@@ -41,6 +42,13 @@ type ProbeCommandDependencies = {
   readDataFile: (path: string) => Promise<unknown>;
   ownership: OwnershipStore;
   cliVersion: string;
+  /** Secures the organization's Make MCP grant up front, so a consent page never interrupts a live probe. */
+  ensureExecutionDataAccess?: (organizationId: number, options: { allowConsent: boolean }) => Promise<void>;
+  /** Per-module bundles through the organization's Make MCP grant. */
+  fetchExecutionData?: (
+    target: { organizationId: number; scenarioId: number; executionId: string },
+    options: { allowConsent: boolean },
+  ) => Promise<ExecutionData>;
   writeOutput?: (value: unknown) => void;
   runProbe?: (
     dependencies: ProbeRunnerDependencies,
@@ -63,6 +71,8 @@ export function registerProbeCommand(
     .option("--timeout <duration>", "Maximum run time, for example 30s or 2m", "30s")
     .option("--yes", "Confirm creation and one scenario run")
     .option("--human", "Render readable output instead of JSON")
+    .option("--no-bundles", "Skip per-module input/output bundles (Make MCP) in the result")
+    .option("--no-consent", "Report missing Make MCP consent instead of opening the consent page")
     .action(async (opts) => {
       const emit = dependencies.writeOutput ?? ((value: unknown) =>
         console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2)));
@@ -113,14 +123,28 @@ export function registerProbeCommand(
           return;
         }
 
+        if (opts.bundles !== false && opts.consent !== false && dependencies.ensureExecutionDataAccess) {
+          try {
+            await dependencies.ensureExecutionDataAccess(target.organizationId, { allowConsent: true });
+          } catch (error) {
+            throw new ProbeValidationError(
+              `Make MCP consent for organization ${target.organizationId} failed: ${error instanceof Error ? error.message : String(error)} `
+                + "(retry, or pass --no-bundles to probe without per-module data).",
+            );
+          }
+        }
         timeout = setTimeout(
           () => controller.abort(new DOMException("Probe timed out.", "AbortError")),
           timeoutMs,
         );
+        const fetchBundles = dependencies.fetchExecutionData;
         const result = await (dependencies.runProbe ?? runOwnedProbe)({
           client,
           ownership: dependencies.ownership,
           fingerprint: fingerprintBlueprint,
+          ...(opts.bundles !== false && fetchBundles
+            ? { fetchExecutionData: (target) => fetchBundles(target, { allowConsent: opts.consent !== false }) }
+            : {}),
         }, {
           ...target,
           blueprint: parsedBlueprint.data,

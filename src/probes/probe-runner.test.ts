@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Blueprint } from "../make-api/types";
-import { ScenarioRunRequestError } from "../make-api/client";
+import { ExecutionNotFoundError, ScenarioRunRequestError } from "../make-api/client";
 import type { OwnedScenarioRecord, OwnershipStore } from "./ownership-store";
 import {
   ProbeCleanupError,
@@ -200,6 +200,8 @@ describe("runOwnedProbe", () => {
         interface: [{ name: "value", type: "text" }],
       }],
       moduleLogs: [{ moduleId: 1, status: 1, bundles: 2 }],
+      executionData: null,
+      executionDataError: null,
       scenarioActive: false,
       cleanupRequired: true,
       cleanupOptions: ["keep", "delete", "revise_and_rerun"],
@@ -210,6 +212,60 @@ describe("runOwnedProbe", () => {
       executionId: "exec-1",
       lastVerifiedFingerprint: "fingerprint",
     });
+  });
+
+  test("waits through the 404 Make returns before a just-started execution is visible", async () => {
+    let polls = 0;
+    const h = harness({
+      fetchExecutionDetails: async () => {
+        polls++;
+        if (polls <= 2) throw new ExecutionNotFoundError("exec-1");
+        return { status: "SUCCESS", outputs: { answer: "ok" } };
+      },
+    });
+    const result = await runOwnedProbe(h.dependencies, request());
+
+    expect(polls).toBe(3);
+    expect(result.executionStatus).toBe("SUCCESS");
+    expect(result.scenarioActive).toBe(false);
+    expect(h.order).not.toContain("stop execution exec-1");
+  });
+
+  test("attaches per-module execution data after the terminal run, before cleanup", async () => {
+    const h = harness();
+    const executionData = {
+      scenarioId: 44, executionId: "exec-1", execution: null, error: null, modules: [], remarks: [],
+    };
+    const targets: unknown[] = [];
+    const result = await runOwnedProbe({
+      ...h.dependencies,
+      fetchExecutionData: async (target) => {
+        h.order.push("fetch execution data");
+        targets.push(target);
+        return executionData;
+      },
+    }, request());
+
+    expect(targets).toEqual([{ organizationId: 9, scenarioId: 44, executionId: "exec-1" }]);
+    expect(h.order.indexOf("fetch execution data")).toBe(h.order.indexOf("logs 1") + 1);
+    expect(h.order.indexOf("fetch execution data")).toBeLessThan(h.order.indexOf("stop scenario"));
+    expect(result.executionData).toEqual(executionData);
+    expect(result.executionDataError).toBeNull();
+  });
+
+  test("reports unavailable execution data without failing the probe", async () => {
+    const h = harness();
+    const result = await runOwnedProbe({
+      ...h.dependencies,
+      fetchExecutionData: async () => {
+        throw Object.assign(new Error("no consent"), { code: "MCP_CONSENT_REQUIRED" });
+      },
+    }, request());
+
+    expect(result.executionStatus).toBe("SUCCESS");
+    expect(result.scenarioActive).toBe(false);
+    expect(result.executionData).toBeNull();
+    expect(result.executionDataError).toEqual({ code: "MCP_CONSENT_REQUIRED", message: "no consent" });
   });
 
   test("accepts Make-normalized blueprints and stores the verified remote fingerprint", async () => {

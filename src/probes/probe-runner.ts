@@ -4,10 +4,11 @@ import type {
   ModuleLogSummary,
 } from "../make-api/types";
 import type { ExecutionDetails } from "../make-api/scenario-runner";
-import { validateScenarioInput } from "../make-api/scenario-runner";
+import { ExecutionNotFoundError, validateScenarioInput } from "../make-api/scenario-runner";
 import { fingerprintBlueprint } from "../utils/blueprint-fingerprint";
 import { walkModules } from "../utils/blueprint-traversal";
 import type { OwnershipStore } from "./ownership-store";
+import type { ExecutionData } from "../mcp/execution-data";
 
 export interface ProbeRequest {
   teamId: number;
@@ -27,6 +28,9 @@ export interface ProbeResult {
   executionError: unknown | null;
   postRunInterfaces: Array<{ moduleId: number; path: string; interface: unknown }>;
   moduleLogs: Array<{ moduleId: number; status: number; bundles: number }>;
+  /** Every module's real input/output bundles (Make MCP); null when not requested or unavailable. */
+  executionData: ExecutionData | null;
+  executionDataError: { code: string; message: string } | null;
   scenarioActive: boolean | null;
   cleanupRequired: true;
   cleanupOptions: ["keep", "delete", "revise_and_rerun"];
@@ -49,6 +53,12 @@ export interface ProbeDependencies {
   >;
   ownership: OwnershipStore;
   fingerprint: typeof fingerprintBlueprint;
+  /** Fetches per-module bundles after a terminal run; failures are reported, never fatal. */
+  fetchExecutionData?: (target: {
+    organizationId: number;
+    scenarioId: number;
+    executionId: string;
+  }) => Promise<ExecutionData>;
   randomUUID?: () => string;
   now?: () => string;
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
@@ -84,6 +94,8 @@ export async function runOwnedProbe(
   let executionError: unknown | null = null;
   let postRunInterfaces: ProbeResult["postRunInterfaces"] = [];
   let moduleLogs: ProbeResult["moduleLogs"] = [];
+  let executionData: ProbeResult["executionData"] = null;
+  let executionDataError: ProbeResult["executionDataError"] = null;
   let terminal = false;
   let primaryError: unknown = null;
   let cleanupFailed = false;
@@ -209,6 +221,20 @@ export async function runOwnedProbe(
       status,
       bundles,
     }));
+    if (deps.fetchExecutionData) {
+      try {
+        executionData = await deps.fetchExecutionData({
+          organizationId: request.organizationId,
+          scenarioId,
+          executionId,
+        });
+      } catch (error) {
+        executionDataError = {
+          code: typeof (error as any)?.code === "string" ? (error as any).code : "EXECUTION_DATA_UNAVAILABLE",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
   } catch (error) {
     primaryError = error;
     if (scenarioId === null) {
@@ -293,6 +319,8 @@ export async function runOwnedProbe(
       executionError,
       postRunInterfaces,
       moduleLogs,
+      executionData,
+      executionDataError,
       scenarioActive,
     }));
   }
@@ -306,6 +334,8 @@ export async function runOwnedProbe(
         executionError,
         postRunInterfaces,
         moduleLogs,
+        executionData,
+        executionDataError,
         scenarioActive,
       }));
     }
@@ -322,6 +352,8 @@ export async function runOwnedProbe(
     executionError,
     postRunInterfaces,
     moduleLogs,
+    executionData,
+    executionDataError,
     scenarioActive,
   });
 }
@@ -336,7 +368,14 @@ async function waitForTerminalExecution(
   let delay = 250;
   while (true) {
     throwIfAborted(signal);
-    const details = await deps.client.fetchExecutionDetails(scenarioId, executionId, signal);
+    let details: ExecutionDetails;
+    try {
+      details = await deps.client.fetchExecutionDetails(scenarioId, executionId, signal);
+    } catch (error) {
+      // A just-started execution is briefly invisible (404). The probe's --timeout bounds this wait.
+      if (!(error instanceof ExecutionNotFoundError)) throw error;
+      details = { status: "RUNNING" };
+    }
     if (details.status !== "RUNNING") return details;
     throwIfAborted(signal);
     await (deps.sleep ?? abortableSleep)(delay, signal);
