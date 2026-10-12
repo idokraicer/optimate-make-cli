@@ -1,3 +1,15 @@
+/**
+ * Make answers 404 for an execution that was just started and is not visible yet
+ * (observed live right after POST /scenarios/{id}/run). Pollers treat it as "still running".
+ */
+export class ExecutionNotFoundError extends Error {
+  readonly httpStatus = 404;
+  constructor(readonly executionId: string) {
+    super(`Make API execution ${executionId} not found (yet).`);
+    this.name = "ExecutionNotFoundError";
+  }
+}
+
 export interface ScenarioInterface {
   input?: ScenarioInputField[];
   output?: ScenarioOutputField[] | null;
@@ -213,7 +225,9 @@ export async function pollScenarioExecution(options: {
       } catch (error) {
         if (options.signal?.aborted) throw abortError(options.signal);
         if (timeoutController.signal.aborted) return stillRunning(options.executionId);
-        throw error;
+        // A just-started execution is briefly invisible (404); keep polling until the deadline.
+        if (!(error instanceof ExecutionNotFoundError)) throw error;
+        details = { status: "RUNNING" };
       }
       if (details.status !== "RUNNING") return details;
       const remaining = deadline - now();

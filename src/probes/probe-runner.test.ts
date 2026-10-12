@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Blueprint } from "../make-api/types";
-import { ScenarioRunRequestError } from "../make-api/client";
+import { ExecutionNotFoundError, ScenarioRunRequestError } from "../make-api/client";
 import type { OwnedScenarioRecord, OwnershipStore } from "./ownership-store";
 import {
   ProbeCleanupError,
@@ -212,6 +212,23 @@ describe("runOwnedProbe", () => {
       executionId: "exec-1",
       lastVerifiedFingerprint: "fingerprint",
     });
+  });
+
+  test("waits through the 404 Make returns before a just-started execution is visible", async () => {
+    let polls = 0;
+    const h = harness({
+      fetchExecutionDetails: async () => {
+        polls++;
+        if (polls <= 2) throw new ExecutionNotFoundError("exec-1");
+        return { status: "SUCCESS", outputs: { answer: "ok" } };
+      },
+    });
+    const result = await runOwnedProbe(h.dependencies, request());
+
+    expect(polls).toBe(3);
+    expect(result.executionStatus).toBe("SUCCESS");
+    expect(result.scenarioActive).toBe(false);
+    expect(h.order).not.toContain("stop execution exec-1");
   });
 
   test("attaches per-module execution data after the terminal run, before cleanup", async () => {

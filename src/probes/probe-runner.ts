@@ -4,7 +4,7 @@ import type {
   ModuleLogSummary,
 } from "../make-api/types";
 import type { ExecutionDetails } from "../make-api/scenario-runner";
-import { validateScenarioInput } from "../make-api/scenario-runner";
+import { ExecutionNotFoundError, validateScenarioInput } from "../make-api/scenario-runner";
 import { fingerprintBlueprint } from "../utils/blueprint-fingerprint";
 import { walkModules } from "../utils/blueprint-traversal";
 import type { OwnershipStore } from "./ownership-store";
@@ -368,7 +368,14 @@ async function waitForTerminalExecution(
   let delay = 250;
   while (true) {
     throwIfAborted(signal);
-    const details = await deps.client.fetchExecutionDetails(scenarioId, executionId, signal);
+    let details: ExecutionDetails;
+    try {
+      details = await deps.client.fetchExecutionDetails(scenarioId, executionId, signal);
+    } catch (error) {
+      // A just-started execution is briefly invisible (404). The probe's --timeout bounds this wait.
+      if (!(error instanceof ExecutionNotFoundError)) throw error;
+      details = { status: "RUNNING" };
+    }
     if (details.status !== "RUNNING") return details;
     throwIfAborted(signal);
     await (deps.sleep ?? abortableSleep)(delay, signal);
