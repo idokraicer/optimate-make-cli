@@ -67,6 +67,54 @@ describe("MakeMcpClient.callTool", () => {
   });
 });
 
+describe("MakeMcpClient rate limiting", () => {
+  const ok = (id: number) => Response.json({ jsonrpc: "2.0", id, result: { structuredContent: { done: true } } });
+  // Observed live: a 200 response whose tool result is an error saying "MakeError: Too Many Requests".
+  const toolLimited = (id: number) =>
+    Response.json({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: "MakeError: Too Many Requests" }] } });
+
+  function limited(responses: Array<(id: number) => Response>) {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const fetchImpl = async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      calls++;
+      return responses.shift()!(body.id);
+    };
+    const mcp = new MakeMcpClient(async () => "tok", fetchImpl as any, "https://mcp.test/claude", {
+      sleep: async (ms) => void sleeps.push(ms),
+    });
+    return { mcp, sleeps, calls: () => calls };
+  }
+
+  test("retries a rate-limited tool call with backoff and then succeeds", async () => {
+    const h = limited([toolLimited, (id) => new Response("", { status: 429 }), ok]);
+    expect((await h.mcp.callTool("scenario_execution_inspect", {})).data).toEqual({ done: true });
+    expect(h.calls()).toBe(3);
+    expect(h.sleeps).toEqual([2000, 4000]);
+  });
+
+  test("honors Retry-After on HTTP 429", async () => {
+    const h = limited([() => new Response("", { status: 429, headers: { "retry-after": "7" } }), ok]);
+    await h.mcp.callTool("x", {});
+    expect(h.sleeps).toEqual([7000]);
+  });
+
+  test("gives up after the retry budget and reports the rate limit", async () => {
+    const h = limited(Array.from({ length: 10 }, () => toolLimited));
+    await expect(h.mcp.callTool("x", {})).rejects.toThrow("Too Many Requests");
+    expect(h.calls()).toBe(6);
+  });
+
+  test("does not retry ordinary tool errors", async () => {
+    const h = limited([
+      (id) => Response.json({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: "Scenario not found." }] } }),
+    ]);
+    await expect(h.mcp.callTool("x", {})).rejects.toThrow("Scenario not found.");
+    expect(h.sleeps).toEqual([]);
+  });
+});
+
 describe("parseRpcBody", () => {
   test("picks the JSON-RPC response from an event stream", () => {
     const text = `event: ping\ndata: {"note":1}\n\n${sse({ jsonrpc: "2.0", id: 1, result: { ok: true } })}`;

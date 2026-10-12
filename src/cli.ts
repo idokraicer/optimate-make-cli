@@ -1293,7 +1293,8 @@ async function fetchExecutionBundles(
   } catch (error: any) {
     if (typeof error?.code === "string" && error.code.startsWith("MCP_")) {
       console.error(`Error: ${error.message}`);
-      process.exit(2);
+      // Same convention as exitCodeFor: 3 = retryable (rate limited), 2 = auth/consent.
+      process.exit(error.code === "MCP_RATE_LIMITED" ? 3 : 2);
     }
     throw error;
   }

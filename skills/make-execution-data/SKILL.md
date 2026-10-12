@@ -104,6 +104,7 @@ Assert on `executionData.modules[].records[].bundles` rather than on `moduleLogs
 | `MCP_CONSENT_REQUIRED` | No grant for the organization, and consent wasn't allowed | `make-fixer mcp login --org <ID>` with the person present, then retry |
 | `MCP_ORGANIZATION_MISMATCH` | A different organization was approved on the consent page | Retry; ask the person to choose the named organization |
 | `MCP_OAUTH_FAILED` | The consent was declined or timed out (5 min), or Make's OAuth server failed | Retry. If it persists, `make-fixer mcp logout --org <ID>` and log in again |
+| `MCP_RATE_LIMITED` | Make's per-organization API limit is still exceeded after about 60 s of automatic backoff (exit code 3) | Wait a minute and retry. On busy organizations, use `--module` to fetch fewer modules |
 | `MCP_TOOL_ERROR` | A Make MCP tool refused, for example an unknown execution or a scenario outside the granted org | Check the IDs. Check that the scenario belongs to the granted organization |
 
 A grant that was revoked, expired, or whose refresh token was already used is deleted, and consent is requested again automatically.

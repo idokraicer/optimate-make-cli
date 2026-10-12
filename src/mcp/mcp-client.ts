@@ -17,29 +17,65 @@ export class McpUnauthorizedError extends Error {
 }
 
 export class McpToolError extends Error {
-  readonly code = "MCP_TOOL_ERROR";
+  readonly code: string = "MCP_TOOL_ERROR";
   constructor(readonly tool: string, message: string) {
     super(`Make MCP tool ${tool} failed: ${message}`);
     this.name = "McpToolError";
   }
 }
 
+export class McpRateLimitedError extends McpToolError {
+  override readonly code = "MCP_RATE_LIMITED";
+  constructor(tool: string, message: string, readonly retryAfterMs: number | null) {
+    super(tool, message);
+    this.name = "McpRateLimitedError";
+  }
+}
+
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+export interface McpClientOptions {
+  sleep?: (milliseconds: number) => Promise<void>;
+  /** Waits between rate-limited attempts; their sum (~60 s) spans Make's per-minute API window. */
+  retryDelaysMs?: number[];
+}
+
+const DEFAULT_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 16_000, 30_000];
+const MAX_RETRY_AFTER_MS = 60_000;
 
 /** Stateless JSON-RPC client for Make's MCP server (streamable HTTP; no session handshake needed). */
 export class MakeMcpClient {
   private nextId = 1;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly retryDelaysMs: number[];
 
   constructor(
     private readonly accessToken: () => Promise<string>,
     private readonly fetchImpl: FetchLike = fetch,
     private readonly url: string = MAKE_MCP_URL,
-  ) {}
+    options: McpClientOptions = {},
+  ) {
+    this.sleep = options.sleep ?? ((ms) => Bun.sleep(ms));
+    this.retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+  }
 
+  /** Calls a tool, retrying with backoff while Make reports rate limiting (organization API limits apply). */
   async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
-    const message = await this.rpc("tools/call", { name, arguments: args });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.callToolOnce(name, args);
+      } catch (error) {
+        if (!(error instanceof McpRateLimitedError) || attempt >= this.retryDelaysMs.length) throw error;
+        await this.sleep(error.retryAfterMs ?? this.retryDelaysMs[attempt]!);
+      }
+    }
+  }
+
+  private async callToolOnce(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const message = await this.rpc(name, "tools/call", { name, arguments: args });
     if (message.error) {
-      throw new McpToolError(name, String(message.error.message ?? "unknown error"));
+      const text = String(message.error.message ?? "unknown error");
+      throw isRateLimitText(text) ? new McpRateLimitedError(name, text, null) : new McpToolError(name, text);
     }
     const result = message.result ?? {};
     const content: any[] = Array.isArray(result.content) ? result.content : [];
@@ -59,12 +95,13 @@ export class MakeMcpClient {
     });
     const remarks = texts.filter((_, index) => index !== payloadIndex);
     if (result.isError) {
-      throw new McpToolError(name, remarks.join(" ").slice(0, 500) || "the tool reported an error");
+      const text = remarks.join(" ").slice(0, 500) || "the tool reported an error";
+      throw isRateLimitText(text) ? new McpRateLimitedError(name, text, null) : new McpToolError(name, text);
     }
     return { data, texts: remarks, isError: false };
   }
 
-  private async rpc(method: string, params: Record<string, unknown>): Promise<any> {
+  private async rpc(tool: string, method: string, params: Record<string, unknown>): Promise<any> {
     const res = await this.fetchImpl(this.url, {
       method: "POST",
       headers: {
@@ -75,8 +112,11 @@ export class MakeMcpClient {
       body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params }),
     });
     if (res.status === 401) throw new McpUnauthorizedError();
+    if (res.status === 429) {
+      throw new McpRateLimitedError(tool, "HTTP 429 Too Many Requests", retryAfterMs(res.headers.get("retry-after")));
+    }
     const text = await res.text();
-    if (!res.ok) throw new McpToolError(String(params.name ?? method), `HTTP ${res.status}`);
+    if (!res.ok) throw new McpToolError(tool, `HTTP ${res.status}`);
     return parseRpcBody(text);
   }
 }
@@ -99,6 +139,18 @@ export function parseRpcBody(text: string): any {
     }
   }
   throw new Error("Make MCP returned no JSON-RPC response.");
+}
+
+function isRateLimitText(text: string): boolean {
+  return /too many requests|rate[- ]?limit|\b429\b/i.test(text);
+}
+
+function retryAfterMs(header: string | null): number | null {
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+  const at = Date.parse(header);
+  return Number.isNaN(at) ? null : Math.min(Math.max(at - Date.now(), 0), MAX_RETRY_AFTER_MS);
 }
 
 function looksLikeJson(text: string): boolean {
