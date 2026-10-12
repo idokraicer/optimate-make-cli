@@ -459,6 +459,36 @@ describe("runOwnedProbe", () => {
     });
   });
 
+  test("reports a failed run's finished execution instead of force-stopping it", async () => {
+    const h = harness({
+      runScenario: async () => {
+        h.order.push("run once");
+        throw new ScenarioRunRequestError("safe", "exec-assigned", 400);
+      },
+      fetchExecutionDetails: async () => {
+        h.order.push("poll ERROR");
+        return { status: "ERROR", error: { name: "BlueprintValidationError" } };
+      },
+      stopScenarioExecution: async () => {
+        h.order.push("stop execution");
+        throw new Error("Make API stop execution error 400.");
+      },
+    });
+    const rejection = await runOwnedProbe(h.dependencies, request()).catch((error) => error);
+
+    expect(rejection).not.toBeInstanceOf(ProbeCleanupError);
+    expect(rejection).toMatchObject({
+      result: {
+        executionId: "exec-assigned",
+        executionStatus: "ERROR",
+        executionError: { name: "BlueprintValidationError" },
+        scenarioActive: false,
+      },
+    });
+    expect(h.order).not.toContain("stop execution");
+    expect(h.ownership.listPending()[0]).toMatchObject({ lifecycleState: "inactive" });
+  });
+
   test("returns terminal execution errors and still deactivates", async () => {
     const h = harness({
       fetchExecutionDetails: async () => {
