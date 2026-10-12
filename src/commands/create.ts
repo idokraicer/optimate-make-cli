@@ -46,7 +46,7 @@ export function registerCreateCommand(program: Command, dependencies: CreateDepe
         const resolved = await dependencies.resolveTeam(opts);
         const parsed = BlueprintSchema.safeParse(await dependencies.readBlueprint(opts.blueprint));
         if (!parsed.success) throw new Error("Blueprint JSON does not match the Make blueprint schema.");
-        const operationId = (dependencies.randomUUID ?? crypto.randomUUID)();
+        const operationId = dependencies.randomUUID?.() ?? crypto.randomUUID();
         const name = buildOwnedScenarioName(parsed.data.name, operationId, opts.probeLabel !== false);
         const blueprint: Blueprint = {
           ...parsed.data,
