@@ -94,7 +94,7 @@ All commands accept `-s <id-or-url>` to specify a scenario. URLs auto-detect the
 | `orgs` | List all organizations the token can access | `--search <term>`, `--base-url <url>`, `--json` |
 | `teams` | List teams within an organization | `-o <orgId>` / `--from-url <url>`, `--search <term>`, `--json` |
 | `scenarios` | List scenarios for a team or organization | `-t <teamId>` / `-o <orgId>` / `--from-url <any-make-url>`, `--active`, `--folder`, `--search <term>`, `--limit`, `--json` |
-| `executions` | List recent executions for a scenario (or fetch one) | `-s <id-or-url>`, `--id <rawExecutionId>`, `--include-input` (retained webhook request when safely matched), `--failed`, `--status success\|incomplete\|error\|failed`, `--limit`, `--from <date>`, `--to <date>`, `--since 30m\|2h\|7d\|1mo`, `--json`, `--compact`, `--output <file>` |
+| `executions` | List recent executions for a scenario (or fetch one) | `-s <id-or-url>`, `--id <rawExecutionId>`, `--bundles` (every module's real input/output via Make MCP — see the make-execution-data skill), `--module <ids>`, `--no-consent`, `--include-input` (retained webhook request when safely matched), `--failed`, `--status success\|incomplete\|error\|failed`, `--limit`, `--from <date>`, `--to <date>`, `--since 30m\|2h\|7d\|1mo`, `--json`, `--compact`, `--output <file>` |
 | `failures` | Scan an entire team/org for recently failed executions | `-t <teamId>` / `-o <orgId>` / `--from-url <url>`, `--since 1h\|24h\|7d\|30d`, `--limit <n>` (per scenario), `--include-paused`, `--json` |
 
 ### Useful patterns
@@ -109,6 +109,8 @@ make-fixer notes -s <id> --add --module 1,2,3 --content "What these modules do"
 make-fixer orgs && make-fixer teams -o <ORG_ID>                              # no URL shared yet
 make-fixer scenarios --from-url "<any make.com url>" --search "webhook"
 make-fixer failures --from-url "<org or team url>" --since 24h               # "what's broken?"
+make-fixer executions -s <id> --id <executionId> --bundles                    # every module's real input/output
+make-fixer mcp status                                                        # orgs with Make MCP consent (one per org)
 ```
 
 For execution history, status codes and per-module bundles, see [references/debugging.md](references/debugging.md).

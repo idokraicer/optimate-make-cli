@@ -200,6 +200,8 @@ describe("runOwnedProbe", () => {
         interface: [{ name: "value", type: "text" }],
       }],
       moduleLogs: [{ moduleId: 1, status: 1, bundles: 2 }],
+      executionData: null,
+      executionDataError: null,
       scenarioActive: false,
       cleanupRequired: true,
       cleanupOptions: ["keep", "delete", "revise_and_rerun"],
@@ -210,6 +212,43 @@ describe("runOwnedProbe", () => {
       executionId: "exec-1",
       lastVerifiedFingerprint: "fingerprint",
     });
+  });
+
+  test("attaches per-module execution data after the terminal run, before cleanup", async () => {
+    const h = harness();
+    const executionData = {
+      scenarioId: 44, executionId: "exec-1", execution: null, error: null, modules: [], remarks: [],
+    };
+    const targets: unknown[] = [];
+    const result = await runOwnedProbe({
+      ...h.dependencies,
+      fetchExecutionData: async (target) => {
+        h.order.push("fetch execution data");
+        targets.push(target);
+        return executionData;
+      },
+    }, request());
+
+    expect(targets).toEqual([{ organizationId: 9, scenarioId: 44, executionId: "exec-1" }]);
+    expect(h.order.indexOf("fetch execution data")).toBe(h.order.indexOf("logs 1") + 1);
+    expect(h.order.indexOf("fetch execution data")).toBeLessThan(h.order.indexOf("stop scenario"));
+    expect(result.executionData).toEqual(executionData);
+    expect(result.executionDataError).toBeNull();
+  });
+
+  test("reports unavailable execution data without failing the probe", async () => {
+    const h = harness();
+    const result = await runOwnedProbe({
+      ...h.dependencies,
+      fetchExecutionData: async () => {
+        throw Object.assign(new Error("no consent"), { code: "MCP_CONSENT_REQUIRED" });
+      },
+    }, request());
+
+    expect(result.executionStatus).toBe("SUCCESS");
+    expect(result.scenarioActive).toBe(false);
+    expect(result.executionData).toBeNull();
+    expect(result.executionDataError).toEqual({ code: "MCP_CONSENT_REQUIRED", message: "no consent" });
   });
 
   test("accepts Make-normalized blueprints and stores the verified remote fingerprint", async () => {

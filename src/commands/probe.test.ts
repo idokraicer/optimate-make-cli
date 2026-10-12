@@ -45,6 +45,8 @@ function harness(overrides: Record<string, unknown> = {}) {
         executionError: null,
         postRunInterfaces: [],
         moduleLogs: [],
+        executionData: null,
+        executionDataError: null,
         scenarioActive: false,
         cleanupRequired: true,
         cleanupOptions: ["keep", "delete", "revise_and_rerun"],
@@ -109,6 +111,64 @@ describe("probe command", () => {
         pendingCleanup: [{ scenarioId: 99, lifecycleState: "cleanup_failed" }],
       },
     });
+  });
+
+  test("secures Make MCP consent before creating the probe and passes the bundle fetcher", async () => {
+    const order: string[] = [];
+    let passedFetcher: unknown;
+    const h = harness({
+      ensureExecutionDataAccess: async (organizationId: number, options: { allowConsent: boolean }) => {
+        order.push(`consent ${organizationId} ${options.allowConsent}`);
+      },
+      fetchExecutionData: async () => ({}),
+      runProbe: async (deps: any) => {
+        order.push("run probe");
+        passedFetcher = deps.fetchExecutionData;
+        return { scenarioId: 44 };
+      },
+    });
+    await h.program.parseAsync([
+      "probe", "--from-url", "https://eu1.make.com/21/scenarios/1/edit",
+      "--blueprint", "probe.json", "--name", "Output probe", "--yes",
+    ], { from: "user" });
+
+    expect(order).toEqual(["consent 9 true", "run probe"]);
+    expect(typeof passedFetcher).toBe("function");
+  });
+
+  test("--no-bundles skips consent and bundle fetching; a consent failure stops before mutation", async () => {
+    const order: string[] = [];
+    let passedFetcher: unknown = "unset";
+    const skip = harness({
+      ensureExecutionDataAccess: async () => void order.push("consent"),
+      fetchExecutionData: async () => ({}),
+      runProbe: async (deps: any) => {
+        passedFetcher = deps.fetchExecutionData;
+        return { scenarioId: 44 };
+      },
+    });
+    await skip.program.parseAsync([
+      "probe", "--from-url", "https://eu1.make.com/21/scenarios/1/edit",
+      "--blueprint", "probe.json", "--name", "Output probe", "--yes", "--no-bundles",
+    ], { from: "user" });
+    expect(order).toEqual([]);
+    expect(passedFetcher).toBeUndefined();
+
+    const failing = harness({
+      ensureExecutionDataAccess: async () => {
+        throw new Error("Consent was granted for organization 777");
+      },
+    });
+    await failing.program.parseAsync([
+      "probe", "--from-url", "https://eu1.make.com/21/scenarios/1/edit",
+      "--blueprint", "probe.json", "--name", "Output probe", "--yes",
+    ], { from: "user" });
+    expect(failing.runs).toHaveLength(0);
+    expect(failing.output[0]).toMatchObject({
+      ok: false,
+      error: { code: "PROBE_VALIDATION_FAILED", message: expect.stringContaining("organization 777") },
+    });
+    process.exitCode = 0;
   });
 
   test("rejects missing connection references before mutation", async () => {
@@ -184,6 +244,8 @@ describe("probe command", () => {
         executionError: null,
         postRunInterfaces: [],
         moduleLogs: [],
+        executionData: null,
+        executionDataError: null,
         scenarioActive: false,
         cleanupRequired: true,
         cleanupOptions: ["keep", "delete", "revise_and_rerun"],

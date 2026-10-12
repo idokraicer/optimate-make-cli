@@ -21,6 +21,11 @@ import { registerConnectionsCommand } from "./commands/connections";
 import { registerCreateCommand } from "./commands/create";
 import { registerCleanupCommand } from "./commands/cleanup";
 import { registerProbeCommand } from "./commands/probe";
+import { registerMcpCommand } from "./commands/mcp";
+import { createMcpAuth } from "./mcp/default-auth";
+import { fetchExecutionData } from "./mcp/execution-data";
+import { GrantStore } from "./mcp/grant-store";
+import { sanitizeForIndex } from "./search/search-index";
 import { getDefaultOwnershipStore, type OwnershipStore } from "./probes/ownership-store";
 import { walkModules } from "./utils/blueprint-traversal";
 import { getModuleCustomName, hasErrorHandler, getMaxModuleId } from "./utils/module-helpers";
@@ -284,6 +289,38 @@ registerProbeCommand(program, {
   readBlueprint: async (path) => JSON.parse(await Bun.file(path).text()),
   readDataFile: async (path) => JSON.parse(await Bun.file(path).text()),
   ownership: ownershipStore,
+  ensureExecutionDataAccess: async (organizationId, { allowConsent }) => {
+    await createMcpAuth({ allowConsent }).accessToken(organizationId);
+  },
+  fetchExecutionData: async ({ organizationId, scenarioId, executionId }, { allowConsent }) => {
+    const auth = createMcpAuth({ allowConsent });
+    return await fetchExecutionData((name, args) => auth.callTool(organizationId, name, args), scenarioId, executionId);
+  },
+  cliVersion: pkg.version,
+});
+
+registerMcpCommand(program, {
+  resolveOrganization: async ({ org, fromUrl }) => {
+    if (org !== undefined) {
+      const organizationId = Number(org);
+      if (!Number.isInteger(organizationId) || organizationId <= 0) {
+        throw new InspectInputError("--org must be a positive organization ID.");
+      }
+      return organizationId;
+    }
+    if (!fromUrl) return null;
+    const parsed = parseMakeUrl(fromUrl);
+    if (parsed.organizationId) return parsed.organizationId;
+    if (!parsed.teamId) throw new InspectInputError("--from-url must contain an organization or team ID.");
+    const team = await (await createClientOrThrow(parsed.baseUrl)).fetchTeam(parsed.teamId);
+    const organizationId = Number(team.organizationId ?? team.organization?.id ?? team.organization_id);
+    if (!Number.isInteger(organizationId) || organizationId <= 0) {
+      throw new InspectInputError("Unable to resolve the team's organization.");
+    }
+    return organizationId;
+  },
+  createAuth: ({ allowConsent }) => createMcpAuth({ allowConsent }),
+  store: new GrantStore(),
   cliVersion: pkg.version,
 });
 
@@ -943,6 +980,9 @@ program
   .requiredOption("-s, --scenario <id>", "Make.com scenario ID or URL")
   .option("--id <executionId>", "Fetch a single execution result by raw ID")
   .option("--include-input", "Include webhook request data when a matching webhook log is available (requires --id)")
+  .option("--bundles", "Include every module's input/output bundles via Make's MCP server (requires --id)")
+  .option("--module <ids>", "With --bundles: only fetch bundles for these comma-separated module IDs")
+  .option("--no-consent", "With --bundles: fail instead of opening Make's consent page when the organization has no grant")
   .option("--limit <n>", "Max executions to list", toInt, 20)
   .option("--status <s>", "Filter: success (1) | incomplete (2, Make UI calls these 'errors') | error (3, rare fatal) | failed (any non-success)")
   .option("--failed", "Shortcut for --status failed (anything that isn't a success)")
@@ -962,9 +1002,16 @@ program
         process.exit(1);
       }
       const execution = await client.fetchExecution(scenarioId, opts.id);
-      const payload = opts.includeInput
+      let payload = opts.includeInput
         ? await fetchExecutionWithWebhookInput(client, scenarioId, opts.id, execution)
         : execution;
+      if (opts.bundles) {
+        // Bundles carry real request data; redact credentials (auth headers, tokens) like probe results do.
+        payload = {
+          ...payload,
+          executionData: sanitizeForIndex(await fetchExecutionBundles(client, scenarioId, opts.id, opts)),
+        };
+      }
       const json = await writeJsonOutput(payload, opts.output);
       if (opts.output) console.error(`Saved execution JSON to ${opts.output}`);
       console.log(json);
@@ -973,6 +1020,10 @@ program
 
     if (opts.includeInput) {
       console.error("Error: --include-input requires --id because webhook input is matched to one execution.");
+      process.exit(1);
+    }
+    if (opts.bundles || opts.module) {
+      console.error("Error: --bundles and --module require --id.");
       process.exit(1);
     }
 
@@ -1058,8 +1109,11 @@ the failures you actually care about. --status error (3) almost never matches.
 
 The executionId column is the raw ID accepted by \`--id\`. Make's public execution endpoint
 returns status plus configured scenario outputs or an error when available; it does not expose
-all module bundles. Add \`--include-input\` to retrieve webhook request data when a webhook log
-can be matched safely. The output includes match provenance and an availability reason.
+module bundles. Add \`--bundles\` to include every module's real input/output bundles (and the
+failing module + error) from Make's official MCP server, under \`executionData\`. That needs a
+per-organization consent: the first time, Make's consent page opens — choose the scenario's
+organization there (see \`make-fixer mcp --help\`). Add \`--include-input\` to retrieve webhook
+request data when a webhook log can be matched safely.
 
 Examples:
   make-fixer executions -s "https://<zone>.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
@@ -1069,6 +1123,8 @@ Examples:
   make-fixer executions -s <SCENARIO_ID> --since 2h --json --output executions.json | jq '.[] | .imtId'
   make-fixer executions -s <SCENARIO_ID> --from 2026-07-15T09:00:00+03:00 --to 2026-07-15T10:00:00+03:00
   make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID> --include-input | jq '.input'
+  make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID> --bundles | jq '.executionData.modules'
+  make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID> --bundles --module 4 --no-consent
   make-fixer executions -s <SCENARIO_ID> --from <FROM_MS> --to <TO_MS> --json
 `,
   );
@@ -1205,6 +1261,43 @@ Drill into a specific scenario's failures:
   );
 
 // --- helpers ---
+
+/** Per-module input/output bundles for one execution, through the organization's Make MCP grant. */
+async function fetchExecutionBundles(
+  client: MakeApiClient,
+  scenarioId: number,
+  executionId: string,
+  opts: { module?: string; consent?: boolean },
+) {
+  const moduleIds = opts.module === undefined
+    ? undefined
+    : String(opts.module).split(",").map((id) => Number(id.trim()));
+  if (moduleIds?.some((id) => !Number.isInteger(id) || id <= 0)) {
+    console.error("Error: --module must be comma-separated positive module IDs.");
+    process.exit(1);
+  }
+  const log = await client.fetchExecutionLog(scenarioId, executionId);
+  const organizationId = Number(log?.organizationId);
+  if (!Number.isInteger(organizationId) || organizationId <= 0) {
+    console.error("Error: could not determine the execution's organization.");
+    process.exit(1);
+  }
+  const auth = createMcpAuth({ allowConsent: opts.consent !== false });
+  try {
+    return await fetchExecutionData(
+      (name, args) => auth.callTool(organizationId, name, args),
+      scenarioId,
+      executionId,
+      { moduleIds },
+    );
+  } catch (error: any) {
+    if (typeof error?.code === "string" && error.code.startsWith("MCP_")) {
+      console.error(`Error: ${error.message}`);
+      process.exit(2);
+    }
+    throw error;
+  }
+}
 
 /**
  * Extract teamId / organizationId / scenarioId / baseUrl from any Make.com URL.

@@ -20,10 +20,11 @@ make-fixer executions -s <SCENARIO_ID> --since 2h --json --output executions.jso
 # One run
 make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID>            # status + configured outputs/error
 make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID> --include-input --output execution.json
+make-fixer executions -s <SCENARIO_ID> --id <EXECUTION_ID> --bundles  # + every module's real input/output
 ```
 
 - `--id` uses Make's public execution endpoint, which returns status plus configured outputs or an error. It
-  does **not** return every module's bundles.
+  does **not** return every module's bundles. Add `--bundles` for those (see below).
 - `--include-input` adds the retained webhook request when a timestamp match is safe. Otherwise `input` is
   `null` and `inputAvailability.reason` explains why.
 
@@ -45,8 +46,10 @@ Use `--failed` (or `--status failed`), never `--status error`. Treat any non-1 s
     the run;
   - `scenario_execution_module_get` takes a `moduleId` and `cycle` (use the cycle `inspect` reports, usually
     1) and returns the real input/output bundles.
-- Use whichever is available: the CLI if it has gained a command for this, otherwise the MCP. Without
-  either, ask the user to open the run in the Make UI.
+- `make-fixer executions … --id <EXECUTION_ID> --bundles` calls both for you and returns them under
+  `executionData`. The first time an organization is used, Make's consent page opens and the user must
+  approve that organization; only they can do this. See the `make-execution-data` skill for consent,
+  output shape, cycles and truncation.
 
 Interpretation rules:
 - Make records **one** error per run (the one that ended it). Other failures only show as error counts.
