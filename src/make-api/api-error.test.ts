@@ -26,6 +26,19 @@ describe("classifyApiResponse", () => {
     expect(invalidData).toMatchObject({ code: "INVALID_DATA", retryable: false });
   });
 
+  test("includes Make detail and suberror messages behind a generic message", async () => {
+    const result = await classifyApiResponse(Response.json({
+      message: "Bad Request",
+      code: "SC400",
+      detail: "Validation failed for 1 parameter(s).",
+      suberrors: [{ message: "Invalid blueprint: module not allowed", code: "IM007" }],
+    }, { status: 400 }));
+    expect(result).toMatchObject({ code: "INVALID_DATA", providerCode: "SC400" });
+    expect(result.message).toBe(
+      "Bad Request: Validation failed for 1 parameter(s). Invalid blueprint: module not allowed",
+    );
+  });
+
   test("keeps the response body available to its caller", async () => {
     const response = new Response(JSON.stringify({ message: "Permission denied" }), { status: 403 });
 
