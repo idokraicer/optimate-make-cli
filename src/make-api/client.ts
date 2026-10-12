@@ -634,8 +634,10 @@ export class MakeApiClient {
         : new DOMException("Scenario creation was cancelled.", "AbortError");
     }
     const marker = operationMarker(input.blueprint.name);
+    // Make's blueprint schema rejects `scheduling`; it is only accepted beside it.
+    const { scheduling: _blueprintScheduling, ...blueprint } = input.blueprint;
     const body = {
-      blueprint: JSON.stringify(input.blueprint),
+      blueprint: JSON.stringify(blueprint),
       teamId: input.teamId,
       scheduling: JSON.stringify(input.scheduling),
     };

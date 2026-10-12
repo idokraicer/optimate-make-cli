@@ -75,7 +75,6 @@ export async function runOwnedProbe(
   const sentBlueprint: Blueprint = {
     ...request.blueprint,
     name: ownedName,
-    scheduling: { type: "on-demand" },
   };
   let scenarioId: number | null = null;
   let executionId: string | null = null;

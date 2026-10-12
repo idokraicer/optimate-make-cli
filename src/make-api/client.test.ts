@@ -77,6 +77,30 @@ describe("MakeApiClient", () => {
     }
   });
 
+  test("sends scheduling only beside the blueprint, never inside it", async () => {
+    const bodies: any[] = [];
+    const client = new MakeApiClient({
+      token: "test-token",
+      baseUrl: "https://eu1.make.com",
+      coordinator: {
+        request: async (_url, init) => {
+          bodies.push(JSON.parse(String(init.body)));
+          return Response.json({
+            scenario: { id: 44, name: "probe", teamId: 21, isActive: false },
+          });
+        },
+      },
+    });
+    await client.createScenario({
+      teamId: 21,
+      blueprint: { name: "probe", flow: [], scheduling: { type: "on-demand" } } as any,
+      scheduling: { type: "on-demand" },
+      confirmed: true,
+    });
+    expect(JSON.parse(bodies[0].blueprint)).toEqual({ name: "probe", flow: [] });
+    expect(JSON.parse(bodies[0].scheduling)).toEqual({ type: "on-demand" });
+  });
+
   test("reconciles an ambiguous create transport failure by a complete exact-marker listing", async () => {
     let createCalls = 0;
     const coordinator = new RequestCoordinator({
