@@ -38,7 +38,7 @@ import {
   writeJsonOutput,
 } from "./utils/execution-query";
 import { checkForUpdate, forceUpdate } from "./updater";
-import { refreshSkillPlugins, warnIfSkillsOutdated } from "./skill-check";
+import { fixSkillInstalls, warnIfSkillsOutdated } from "./skill-check";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
@@ -146,7 +146,7 @@ program
   .description("Update make-fixer to the latest version from GitHub")
   .action(async () => {
     await forceUpdate(pkg.version);
-    refreshSkillPlugins();
+    fixSkillInstalls();
     warnIfSkillsOutdated(pkg.version);
   });
 

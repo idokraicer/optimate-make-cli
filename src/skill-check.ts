@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { compareSemver } from "./updater";
@@ -190,7 +199,9 @@ export function formatSkillWarning(result: SkillCheckResult, cliVersion: string)
     );
   }
   lines.push(
-    "  Fix: make-fixer update   (refreshes the CLI and the make-fixer plugin)",
+    "  Fix: make-fixer update   (updates the CLI and installs/updates the plugin in Claude Code and Codex)",
+    "  If this persists after `make-fixer update`, the published plugin is behind this CLI: a maintainer runs",
+    "  `bun run sync-skills` in the make-fixer repo and releases the plugin in optimate-plugins.",
     "  NOTE FOR AI AGENTS: the make-fixer skill you loaded may be outdated or missing and may not know this",
     "  CLI's current commands and flags. Tell the user about this warning before you continue, and confirm",
     "  commands with `make-fixer <command> --help` rather than relying on the skill alone.",
@@ -216,68 +227,118 @@ type Runner = (cmd: string[]) => { ok: boolean; out: string };
 
 const defaultRunner: Runner = (cmd) => {
   try {
-    const proc = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 120_000 });
+    const proc = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 180_000 });
     return { ok: proc.exitCode === 0, out: `${proc.stdout.toString()}${proc.stderr.toString()}`.trim() };
   } catch (e) {
     return { ok: false, out: String(e) };
   }
 };
 
-/**
- * Part of `make-fixer update`: refresh the make-fixer plugin in Claude Code and Codex through their own plugin
- * managers (never by copying files — hand-copied skills are what goes stale). Best-effort; logs to stderr.
- */
-export function refreshSkillPlugins(opts: {
+const MARKETPLACE = "optimate-plugins";
+const MARKETPLACE_SOURCE = "idokraicer/optimate-plugins";
+const PLUGIN = `make-fixer@${MARKETPLACE}`;
+
+export interface SkillFixOptions {
   home?: string;
   cwd?: string;
   which?: (bin: string) => string | null;
   run?: Runner;
   log?: (msg: string) => void;
-} = {}): void {
+  now?: () => Date;
+}
+
+function firstLine(out: string): string {
+  return out.split("\n").find((l) => l.trim()) ?? "unknown error";
+}
+
+/**
+ * Move hand-placed personal copies of the skills out of the way once the host's plugin provides them: a
+ * personal copy overrides the plugin and never updates. Folders go to ~/.make-fixer/skill-backups; symlinks
+ * are just removed.
+ */
+function removePersonalCopies(home: string, tools: string[], backupRoot: string, log: (m: string) => void) {
+  for (const tool of tools) {
+    for (const name of SKILL_NAMES) {
+      const path = join(home, tool, "skills", name);
+      let stat;
+      try {
+        stat = lstatSync(path);
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink()) {
+        unlinkSync(path);
+        log(`  removed symlink ~/${tool}/skills/${name} (the plugin provides it)\n`);
+      } else {
+        const dest = join(backupRoot, tool.replace(/^\./, ""), name);
+        mkdirSync(dirname(dest), { recursive: true });
+        renameSync(path, dest);
+        log(`  moved personal copy ~/${tool}/skills/${name} → ${dest}\n`);
+      }
+    }
+  }
+}
+
+/**
+ * Part of `make-fixer update`: make Claude Code and Codex load the current make-fixer skills. For each host
+ * on PATH it adds the optimate-plugins marketplace if needed, refreshes it, installs or updates the plugin
+ * (user scope in Claude Code), and then removes personal copies that would override the plugin. Always
+ * through the hosts' own plugin managers — never by copying skill files. Best-effort; logs to stderr.
+ */
+export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
   const home = opts.home ?? homedir();
   const cwd = opts.cwd ?? process.cwd();
   const which = opts.which ?? ((bin: string) => Bun.which(bin));
   const run = opts.run ?? defaultRunner;
   const log = opts.log ?? ((msg: string) => void process.stderr.write(msg));
-  const PLUGIN = "make-fixer@optimate-plugins";
+  const stamp = (opts.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, "-");
+  const backupRoot = join(home, ".make-fixer", "skill-backups", stamp);
 
   const claude = which("claude");
   if (claude) {
+    if (!run([claude, "plugin", "marketplace", "list"]).out.includes(MARKETPLACE)) {
+      run([claude, "plugin", "marketplace", "add", MARKETPLACE_SOURCE]);
+    }
+    run([claude, "plugin", "marketplace", "update", MARKETPLACE]);
     const scopes = new Set(
       claudePluginSources(home, cwd)
         .filter((s) => s.label.includes(PLUGIN))
         .map((s) => /\((\w+) scope\)/.exec(s.label)?.[1])
         .filter((s): s is string => s != null),
     );
-    if (scopes.size === 0) {
-      log(`↻ Claude Code: ${PLUGIN} is not installed for this directory. Install it once for every project:\n`);
-      log(`    claude plugin install ${PLUGIN} --scope user\n`);
-    } else {
-      run([claude, "plugin", "marketplace", "update", "optimate-plugins"]);
-      for (const scope of scopes) {
-        const r = run([claude, "plugin", "update", PLUGIN, "--scope", scope]);
-        log(r.ok ? `↻ Claude Code: ${PLUGIN} (${scope}) updated. Restart Claude Code to load it.\n`
-                 : `⚠ Claude Code: could not update ${PLUGIN} (${scope}): ${r.out.split("\n")[0]}\n`);
-      }
+    // User scope makes the skill available in every project; update any narrower installs too.
+    const user = scopes.has("user")
+      ? run([claude, "plugin", "update", PLUGIN, "--scope", "user"])
+      : run([claude, "plugin", "install", PLUGIN, "--scope", "user"]);
+    log(user.ok
+      ? `↻ Claude Code: ${PLUGIN} ${scopes.has("user") ? "updated" : "installed"} (user scope). Restart Claude Code to load it.\n`
+      : `⚠ Claude Code: could not install/update ${PLUGIN}: ${firstLine(user.out)}\n`);
+    for (const scope of scopes) {
+      if (scope === "user") continue;
+      const r = run([claude, "plugin", "update", PLUGIN, "--scope", scope]);
+      if (!r.ok) log(`⚠ Claude Code: could not update ${PLUGIN} (${scope} scope): ${firstLine(r.out)}\n`);
     }
+    if (user.ok) removePersonalCopies(home, [".claude"], backupRoot, log);
+  } else {
+    log("  Claude Code CLI (claude) not on PATH; skipped.\n");
   }
 
   const codex = which("codex");
   if (codex) {
-    const list = run([codex, "plugin", "list", "--json"]);
-    let installed = false;
+    let hasMarketplace = false;
     try {
-      installed = (JSON.parse(list.out).installed ?? []).some(
-        (p: { name?: string; marketplaceName?: string; installed?: boolean }) =>
-          p.name === "make-fixer" && p.marketplaceName === "optimate-plugins" && p.installed,
-      );
+      const { marketplaces } = JSON.parse(run([codex, "plugin", "marketplace", "list", "--json"]).out);
+      hasMarketplace = (marketplaces ?? []).some((m: { name?: string }) => m.name === MARKETPLACE);
     } catch {
-      // Older Codex without `plugin list --json`: nothing to refresh.
+      // Unparseable output: try adding; Codex rejects duplicates harmlessly.
     }
-    if (installed) {
-      run([codex, "plugin", "marketplace", "upgrade", "optimate-plugins", "--json"]);
-      const r = run([codex, "plugin", "add", PLUGIN, "--json"]);
-      log(r.ok ? `↻ Codex: ${PLUGIN} updated.\n` : `⚠ Codex: could not update ${PLUGIN}: ${r.out.split("\n")[0]}\n`);
-    }
+    if (!hasMarketplace) run([codex, "plugin", "marketplace", "add", MARKETPLACE_SOURCE]);
+    run([codex, "plugin", "marketplace", "upgrade", MARKETPLACE, "--json"]);
+    const r = run([codex, "plugin", "add", PLUGIN, "--json"]);
+    log(r.ok ? `↻ Codex: ${PLUGIN} installed/updated. Restart Codex to load it.\n`
+             : `⚠ Codex: could not install/update ${PLUGIN}: ${firstLine(r.out)}\n`);
+    if (r.ok) removePersonalCopies(home, [".codex", ".agents"], backupRoot, log);
+  } else {
+    log("  Codex CLI (codex) not on PATH; skipped.\n");
   }
 }

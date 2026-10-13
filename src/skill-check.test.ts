@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSkills, formatSkillWarning, refreshSkillPlugins, skillFingerprint } from "./skill-check";
+import { checkSkills, formatSkillWarning, fixSkillInstalls, skillFingerprint } from "./skill-check";
 
 let root: string;
 let home: string;
@@ -128,54 +128,89 @@ describe("formatSkillWarning", () => {
   });
 });
 
-describe("refreshSkillPlugins", () => {
-  test("updates the installed Claude Code scope through the claude CLI", () => {
-    installClaudePlugin("1.0.7", { scope: "user" }, { "make-fixer": "old" });
-    const calls: string[] = [];
-    refreshSkillPlugins({
-      home,
-      cwd: project,
-      which: (bin) => (bin === "claude" ? "claude" : null),
-      run: (cmd) => (calls.push(cmd.join(" ")), { ok: true, out: "" }),
-      log: () => {},
-    });
-    expect(calls).toEqual([
-      "claude plugin marketplace update optimate-plugins",
-      "claude plugin update make-fixer@optimate-plugins --scope user",
-    ]);
-  });
-
-  test("suggests a user-scope install instead of installing when absent", () => {
-    const calls: string[] = [];
+describe("fixSkillInstalls", () => {
+  type Call = string;
+  function fake(responses: Record<string, { ok?: boolean; out?: string }> = {}) {
+    const calls: Call[] = [];
     const logs: string[] = [];
-    refreshSkillPlugins({
-      home,
-      cwd: project,
-      which: (bin) => (bin === "claude" ? "claude" : null),
-      run: (cmd) => (calls.push(cmd.join(" ")), { ok: true, out: "" }),
-      log: (m) => logs.push(m),
-    });
-    expect(calls).toEqual([]);
-    expect(logs.join("")).toContain("--scope user");
-  });
-
-  test("refreshes Codex only when make-fixer is installed there", () => {
-    const calls: string[] = [];
-    refreshSkillPlugins({
-      home,
-      cwd: project,
-      which: (bin) => (bin === "codex" ? "codex" : null),
-      run: (cmd) => {
-        calls.push(cmd.join(" "));
-        const out = JSON.stringify({ installed: [{ name: "make-fixer", marketplaceName: "optimate-plugins", installed: true }] });
-        return { ok: true, out: cmd.includes("list") ? out : "" };
+    return {
+      calls,
+      logs,
+      opts: {
+        home,
+        cwd: project,
+        now: () => new Date("2026-10-13T00:00:00Z"),
+        which: (bin: string) => bin,
+        run: (cmd: string[]) => {
+          const key = cmd.join(" ");
+          calls.push(key);
+          const hit = Object.entries(responses).find(([k]) => key.startsWith(k))?.[1];
+          return { ok: hit?.ok ?? true, out: hit?.out ?? "" };
+        },
+        log: (m: string) => void logs.push(m),
       },
-      log: () => {},
+    };
+  }
+  const codexHasMarketplace = { out: JSON.stringify({ marketplaces: [{ name: "optimate-plugins" }] }) };
+
+  test("installs at user scope in Claude Code and installs/updates in Codex", () => {
+    const f = fake({
+      "claude plugin marketplace list": { out: "optimate-plugins" },
+      "codex plugin marketplace list": codexHasMarketplace,
     });
-    expect(calls).toEqual([
-      "codex plugin list --json",
+    fixSkillInstalls(f.opts);
+    expect(f.calls).toEqual([
+      "claude plugin marketplace list",
+      "claude plugin marketplace update optimate-plugins",
+      "claude plugin install make-fixer@optimate-plugins --scope user",
+      "codex plugin marketplace list --json",
       "codex plugin marketplace upgrade optimate-plugins --json",
       "codex plugin add make-fixer@optimate-plugins --json",
     ]);
+  });
+
+  test("updates existing installs and adds missing marketplaces", () => {
+    installClaudePlugin("1.0.7", { scope: "user" }, { "make-fixer": "old" });
+    const f = fake({ "codex plugin marketplace list": { out: JSON.stringify({ marketplaces: [] }) } });
+    fixSkillInstalls(f.opts);
+    expect(f.calls).toContain("claude plugin marketplace add idokraicer/optimate-plugins");
+    expect(f.calls).toContain("claude plugin update make-fixer@optimate-plugins --scope user");
+    expect(f.calls).toContain("codex plugin marketplace add idokraicer/optimate-plugins");
+  });
+
+  test("moves personal copies aside and removes symlinks once the plugin is installed", () => {
+    writeSkill(join(home, ".claude", "skills", "make-fixer"), "old");
+    mkdirSync(join(home, ".codex", "skills"), { recursive: true });
+    symlinkSync(join(bundled, "make-fixer"), join(home, ".codex", "skills", "make-fixer"));
+    writeSkill(join(home, ".agents", "skills", "make-execution-data"), "old");
+    fixSkillInstalls(fake({ "codex plugin marketplace list": codexHasMarketplace }).opts);
+    expect(existsSync(join(home, ".claude", "skills", "make-fixer"))).toBe(false);
+    expect(existsSync(join(home, ".codex", "skills", "make-fixer"))).toBe(false);
+    expect(existsSync(join(home, ".agents", "skills", "make-execution-data"))).toBe(false);
+    const backups = join(home, ".make-fixer", "skill-backups", "2026-10-13T00-00-00-000Z");
+    expect(readFileSync(join(backups, "claude", "make-fixer", "SKILL.md"), "utf8")).toBe("old");
+    expect(existsSync(join(backups, "agents", "make-execution-data", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(bundled, "make-fixer", "SKILL.md"))).toBe(true); // symlink target untouched
+  });
+
+  test("keeps personal copies when the plugin install fails", () => {
+    writeSkill(join(home, ".claude", "skills", "make-fixer"), "old");
+    writeSkill(join(home, ".codex", "skills", "make-fixer"), "old");
+    const f = fake({
+      "claude plugin install": { ok: false, out: "network down" },
+      "codex plugin add": { ok: false, out: "network down" },
+      "codex plugin marketplace list": codexHasMarketplace,
+    });
+    fixSkillInstalls(f.opts);
+    expect(existsSync(join(home, ".claude", "skills", "make-fixer"))).toBe(true);
+    expect(existsSync(join(home, ".codex", "skills", "make-fixer"))).toBe(true);
+    expect(f.logs.join("")).toContain("network down");
+  });
+
+  test("skips a host that is not on PATH", () => {
+    const f = fake();
+    fixSkillInstalls({ ...f.opts, which: (bin) => (bin === "codex" ? "codex" : null) });
+    expect(f.calls.some((c) => c.startsWith("claude"))).toBe(false);
+    expect(f.logs.join("")).toContain("claude) not on PATH");
   });
 });

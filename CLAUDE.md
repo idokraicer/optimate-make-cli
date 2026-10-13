@@ -119,4 +119,5 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 version and open a PR there. `bun run check-skills` reports drift.
 Every CLI command compares the skill copies an agent could load (plugins, `~/.claude|.codex|.agents/skills`,
 project folders) with `skills/` and prints a warning to stderr when they differ (`src/skill-check.ts`);
-`make-fixer update` refreshes the plugin through `claude plugin update` / `codex plugin add`.
+`make-fixer update` installs/updates the plugin in both Claude Code (user scope) and Codex through their
+plugin CLIs, then moves personal copies that would override it to `~/.make-fixer/skill-backups/`.
