@@ -1,0 +1,283 @@
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { compareSemver } from "./updater";
+
+// The skills an agent uses to drive this CLI ship in the same repo (`skills/`). Agents load them from
+// elsewhere — the optimate-plugins plugin, or hand-copied folders — and those copies go stale. A stale skill
+// doesn't know about newer commands and flags (that is how `executions --bundles` went unused), so every
+// command compares each copy an agent could load against the skills bundled with this CLI and, when one
+// differs, tells the agent to warn the user.
+
+export const SKILL_NAMES = ["make-fixer", "make-execution-data"] as const;
+
+/** Plugin-only files (Codex UI metadata) that the sync script never copies. */
+const IGNORED_PARTS = new Set(["agents", ".DS_Store"]);
+
+const PKG_ROOT = dirname(import.meta.dir);
+const BUNDLED_SKILLS_DIR = join(PKG_ROOT, "skills");
+
+export type SkillSourceKind = "personal" | "project" | "claude-plugin" | "codex-plugin";
+
+export interface SkillSource {
+  kind: SkillSourceKind;
+  /** Human-readable name, e.g. "Claude Code plugin make-fixer@optimate-plugins 1.0.7 (user)". */
+  label: string;
+  /** Folder that holds `<skill-name>/SKILL.md` folders. */
+  skillsDir: string;
+}
+
+export interface SkillIssue {
+  source: SkillSource;
+  skill: string;
+  problem: "differs" | "missing";
+}
+
+export interface SkillCheckResult {
+  issues: SkillIssue[];
+  /** True when Claude Code is running this CLI and no make-fixer skill applies to the current directory. */
+  claudeCodeHasNoSkill: boolean;
+}
+
+/** sha256 over a skill folder's files (path + content), or null when it has no SKILL.md. */
+export function skillFingerprint(dir: string): string | null {
+  if (!existsSync(join(dir, "SKILL.md"))) return null;
+  const files = readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((p) => !p.split(/[\\/]/).some((part) => IGNORED_PARTS.has(part)))
+    .filter((p) => statSync(join(dir, p)).isFile())
+    .map((p) => p.split(sep).join("/"))
+    .sort();
+  const hash = createHash("sha256");
+  for (const f of files) {
+    hash.update(f).update("\0").update(readFileSync(join(dir, f))).update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function isWithin(child: string, parent: string): boolean {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep) && !/^[a-zA-Z]:/.test(rel));
+}
+
+interface InstalledPluginEntry {
+  scope?: string;
+  projectPath?: string;
+  installPath?: string;
+  version?: string;
+}
+
+/** Claude Code plugin installs of make-fixer that apply to `cwd` (user scope, or a project containing cwd). */
+function claudePluginSources(home: string, cwd: string): SkillSource[] {
+  const file = join(home, ".claude", "plugins", "installed_plugins.json");
+  if (!existsSync(file)) return [];
+  let plugins: Record<string, InstalledPluginEntry[]>;
+  try {
+    plugins = JSON.parse(readFileSync(file, "utf8")).plugins ?? {};
+  } catch {
+    return [];
+  }
+  const sources: SkillSource[] = [];
+  for (const [key, entries] of Object.entries(plugins)) {
+    if (!key.startsWith("make-fixer@") || !Array.isArray(entries)) continue;
+    for (const e of entries) {
+      if (!e.installPath) continue;
+      const applies = e.scope === "user" || (e.projectPath != null && isWithin(cwd, e.projectPath));
+      if (!applies) continue;
+      sources.push({
+        kind: "claude-plugin",
+        label: `Claude Code plugin ${key} ${e.version ?? "?"} (${e.scope ?? "?"} scope)`,
+        skillsDir: join(e.installPath, "skills"),
+      });
+    }
+  }
+  return sources;
+}
+
+/** Newest cached Codex install of make-fixer per marketplace. */
+function codexPluginSources(home: string): SkillSource[] {
+  const cache = join(home, ".codex", "plugins", "cache");
+  if (!existsSync(cache)) return [];
+  const sources: SkillSource[] = [];
+  for (const marketplace of readdirSync(cache)) {
+    const pluginDir = join(cache, marketplace, "make-fixer");
+    if (!existsSync(pluginDir)) continue;
+    const versions = readdirSync(pluginDir).filter((v) => existsSync(join(pluginDir, v, "skills")));
+    const newest = versions.sort(compareSemver).at(-1);
+    if (!newest) continue;
+    sources.push({
+      kind: "codex-plugin",
+      label: `Codex plugin make-fixer@${marketplace} ${newest}`,
+      skillsDir: join(pluginDir, newest, "skills"),
+    });
+  }
+  return sources;
+}
+
+/** Hand-placed skill folders: personal (~/.claude, ~/.codex, ~/.agents) and project (cwd up to home or root). */
+function folderSources(home: string, cwd: string): SkillSource[] {
+  const sources: SkillSource[] = [];
+  for (const tool of [".claude", ".codex", ".agents"]) {
+    sources.push({ kind: "personal", label: `~/${tool}/skills`, skillsDir: join(home, tool, "skills") });
+  }
+  let dir = resolve(cwd);
+  while (dir !== resolve(home)) {
+    for (const tool of [".claude", ".agents"]) {
+      sources.push({ kind: "project", label: join(dir, tool, "skills"), skillsDir: join(dir, tool, "skills") });
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return sources;
+}
+
+export function checkSkills(opts: {
+  bundledDir?: string;
+  home?: string;
+  cwd?: string;
+  env?: Record<string, string | undefined>;
+}): SkillCheckResult {
+  const bundledDir = opts.bundledDir ?? BUNDLED_SKILLS_DIR;
+  const home = opts.home ?? homedir();
+  const cwd = opts.cwd ?? process.cwd();
+  const env = opts.env ?? process.env;
+
+  const bundled = new Map<string, string>();
+  for (const name of SKILL_NAMES) {
+    const fp = skillFingerprint(join(bundledDir, name));
+    if (fp) bundled.set(name, fp);
+  }
+  // Without the bundled skills there is nothing to compare against.
+  if (bundled.size === 0) return { issues: [], claudeCodeHasNoSkill: false };
+
+  const claudePlugins = claudePluginSources(home, cwd);
+  const sources = [...claudePlugins, ...codexPluginSources(home), ...folderSources(home, cwd)];
+
+  const issues: SkillIssue[] = [];
+  let claudeFolderCopy = false;
+  for (const source of sources) {
+    const isPlugin = source.kind === "claude-plugin" || source.kind === "codex-plugin";
+    for (const [name, expected] of bundled) {
+      const dir = join(source.skillsDir, name);
+      const actual = skillFingerprint(dir);
+      if (actual == null) {
+        if (isPlugin) issues.push({ source, skill: name, problem: "missing" });
+        continue;
+      }
+      if (name === "make-fixer" && !isPlugin && !source.label.includes(".codex")) claudeFolderCopy = true;
+      if (actual !== expected) issues.push({ source, skill: name, problem: "differs" });
+    }
+  }
+
+  const inClaudeCode = env.CLAUDECODE === "1";
+  return { issues, claudeCodeHasNoSkill: inClaudeCode && claudePlugins.length === 0 && !claudeFolderCopy };
+}
+
+export function formatSkillWarning(result: SkillCheckResult, cliVersion: string): string {
+  const lines = [`⚠ make-fixer ${cliVersion}: the make-fixer skill an AI agent loads is out of sync with this CLI.`];
+  for (const issue of result.issues) {
+    const what = issue.problem === "missing" ? "is missing" : "differs";
+    let note = "";
+    if (issue.source.kind === "personal") note = " — a personal copy; it overrides the plugin and never updates. Delete it.";
+    else if (issue.source.kind === "project") note = " — a project copy; update or delete it.";
+    lines.push(`  • ${issue.source.label}: ${issue.skill} ${what}${note}`);
+  }
+  if (result.claudeCodeHasNoSkill) {
+    lines.push(
+      "  • Claude Code has no make-fixer skill for this directory. Install it for every project:",
+      "      claude plugin install make-fixer@optimate-plugins --scope user",
+    );
+  }
+  lines.push(
+    "  Fix: make-fixer update   (refreshes the CLI and the make-fixer plugin)",
+    "  NOTE FOR AI AGENTS: the make-fixer skill you loaded may be outdated or missing and may not know this",
+    "  CLI's current commands and flags. Tell the user about this warning before you continue, and confirm",
+    "  commands with `make-fixer <command> --help` rather than relying on the skill alone.",
+    "  (Silence with MAKE_FIXER_SKIP_SKILL_CHECK=1.)",
+  );
+  return lines.join("\n") + "\n";
+}
+
+/** Best-effort: never throws, prints to stderr so --json stdout stays clean. */
+export function warnIfSkillsOutdated(cliVersion: string): void {
+  if (process.env.MAKE_FIXER_SKIP_SKILL_CHECK === "1") return;
+  try {
+    const result = checkSkills({});
+    if (result.issues.length > 0 || result.claudeCodeHasNoSkill) {
+      process.stderr.write(formatSkillWarning(result, cliVersion));
+    }
+  } catch {
+    // A broken skill folder must never stop the CLI.
+  }
+}
+
+type Runner = (cmd: string[]) => { ok: boolean; out: string };
+
+const defaultRunner: Runner = (cmd) => {
+  try {
+    const proc = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 120_000 });
+    return { ok: proc.exitCode === 0, out: `${proc.stdout.toString()}${proc.stderr.toString()}`.trim() };
+  } catch (e) {
+    return { ok: false, out: String(e) };
+  }
+};
+
+/**
+ * Part of `make-fixer update`: refresh the make-fixer plugin in Claude Code and Codex through their own plugin
+ * managers (never by copying files — hand-copied skills are what goes stale). Best-effort; logs to stderr.
+ */
+export function refreshSkillPlugins(opts: {
+  home?: string;
+  cwd?: string;
+  which?: (bin: string) => string | null;
+  run?: Runner;
+  log?: (msg: string) => void;
+} = {}): void {
+  const home = opts.home ?? homedir();
+  const cwd = opts.cwd ?? process.cwd();
+  const which = opts.which ?? ((bin: string) => Bun.which(bin));
+  const run = opts.run ?? defaultRunner;
+  const log = opts.log ?? ((msg: string) => void process.stderr.write(msg));
+  const PLUGIN = "make-fixer@optimate-plugins";
+
+  const claude = which("claude");
+  if (claude) {
+    const scopes = new Set(
+      claudePluginSources(home, cwd)
+        .filter((s) => s.label.includes(PLUGIN))
+        .map((s) => /\((\w+) scope\)/.exec(s.label)?.[1])
+        .filter((s): s is string => s != null),
+    );
+    if (scopes.size === 0) {
+      log(`↻ Claude Code: ${PLUGIN} is not installed for this directory. Install it once for every project:\n`);
+      log(`    claude plugin install ${PLUGIN} --scope user\n`);
+    } else {
+      run([claude, "plugin", "marketplace", "update", "optimate-plugins"]);
+      for (const scope of scopes) {
+        const r = run([claude, "plugin", "update", PLUGIN, "--scope", scope]);
+        log(r.ok ? `↻ Claude Code: ${PLUGIN} (${scope}) updated. Restart Claude Code to load it.\n`
+                 : `⚠ Claude Code: could not update ${PLUGIN} (${scope}): ${r.out.split("\n")[0]}\n`);
+      }
+    }
+  }
+
+  const codex = which("codex");
+  if (codex) {
+    const list = run([codex, "plugin", "list", "--json"]);
+    let installed = false;
+    try {
+      installed = (JSON.parse(list.out).installed ?? []).some(
+        (p: { name?: string; marketplaceName?: string; installed?: boolean }) =>
+          p.name === "make-fixer" && p.marketplaceName === "optimate-plugins" && p.installed,
+      );
+    } catch {
+      // Older Codex without `plugin list --json`: nothing to refresh.
+    }
+    if (installed) {
+      run([codex, "plugin", "marketplace", "upgrade", "optimate-plugins", "--json"]);
+      const r = run([codex, "plugin", "add", PLUGIN, "--json"]);
+      log(r.ok ? `↻ Codex: ${PLUGIN} updated.\n` : `⚠ Codex: could not update ${PLUGIN}: ${r.out.split("\n")[0]}\n`);
+    }
+  }
+}
