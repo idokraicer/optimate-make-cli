@@ -7,6 +7,7 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  rmdirSync,
   unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -25,6 +26,16 @@ export const SKILL_NAMES = ["make-fixer", "make-execution-data"] as const;
 const IGNORED_PARTS = new Set(["agents", ".DS_Store"]);
 
 const PKG_ROOT = dirname(import.meta.dir);
+
+/** Claude Code's config dir (`CLAUDE_CONFIG_DIR`, default ~/.claude). */
+function claudeDir(home: string, env: Record<string, string | undefined>): string {
+  return env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+}
+
+/** Codex's config dir (`CODEX_HOME`, default ~/.codex). */
+function codexDir(home: string, env: Record<string, string | undefined>): string {
+  return env.CODEX_HOME || join(home, ".codex");
+}
 const BUNDLED_SKILLS_DIR = join(PKG_ROOT, "skills");
 
 export type SkillSourceKind = "personal" | "project" | "claude-plugin" | "codex-plugin";
@@ -59,13 +70,16 @@ export function skillFingerprint(dir: string): string | null {
     .sort();
   const hash = createHash("sha256");
   for (const f of files) {
-    hash.update(f).update("\0").update(readFileSync(join(dir, f))).update("\0");
+    // Git on Windows may check text out with CRLF; the same skill must hash the same everywhere.
+    const content = readFileSync(join(dir, f)).toString("utf8").replace(/\r\n/g, "\n");
+    hash.update(f).update("\0").update(content).update("\0");
   }
   return hash.digest("hex");
 }
 
 function isWithin(child: string, parent: string): boolean {
-  const rel = relative(resolve(parent), resolve(child));
+  const norm = (p: string) => (process.platform === "win32" ? resolve(p).toLowerCase() : resolve(p));
+  const rel = relative(norm(parent), norm(child));
   return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep) && !/^[a-zA-Z]:/.test(rel));
 }
 
@@ -77,8 +91,8 @@ interface InstalledPluginEntry {
 }
 
 /** Claude Code plugin installs of make-fixer that apply to `cwd` (user scope, or a project containing cwd). */
-function claudePluginSources(home: string, cwd: string): SkillSource[] {
-  const file = join(home, ".claude", "plugins", "installed_plugins.json");
+function claudePluginSources(home: string, cwd: string, env: Record<string, string | undefined>): SkillSource[] {
+  const file = join(claudeDir(home, env), "plugins", "installed_plugins.json");
   if (!existsSync(file)) return [];
   let plugins: Record<string, InstalledPluginEntry[]>;
   try {
@@ -104,8 +118,8 @@ function claudePluginSources(home: string, cwd: string): SkillSource[] {
 }
 
 /** Newest cached Codex install of make-fixer per marketplace. */
-function codexPluginSources(home: string): SkillSource[] {
-  const cache = join(home, ".codex", "plugins", "cache");
+function codexPluginSources(home: string, env: Record<string, string | undefined>): SkillSource[] {
+  const cache = join(codexDir(home, env), "plugins", "cache");
   if (!existsSync(cache)) return [];
   const sources: SkillSource[] = [];
   for (const marketplace of readdirSync(cache)) {
@@ -124,11 +138,12 @@ function codexPluginSources(home: string): SkillSource[] {
 }
 
 /** Hand-placed skill folders: personal (~/.claude, ~/.codex, ~/.agents) and project (cwd up to home or root). */
-function folderSources(home: string, cwd: string): SkillSource[] {
-  const sources: SkillSource[] = [];
-  for (const tool of [".claude", ".codex", ".agents"]) {
-    sources.push({ kind: "personal", label: `~/${tool}/skills`, skillsDir: join(home, tool, "skills") });
-  }
+function folderSources(home: string, cwd: string, env: Record<string, string | undefined>): SkillSource[] {
+  const sources: SkillSource[] = personalSkillDirs(home, env).map(({ label, dir }) => ({
+    kind: "personal" as const,
+    label,
+    skillsDir: dir,
+  }));
   let dir = resolve(cwd);
   while (dir !== resolve(home)) {
     for (const tool of [".claude", ".agents"]) {
@@ -139,6 +154,17 @@ function folderSources(home: string, cwd: string): SkillSource[] {
     dir = parent;
   }
   return sources;
+}
+
+/** Personal skill folders per host: Claude Code reads its own; Codex reads its own and ~/.agents. */
+function personalSkillDirs(home: string, env: Record<string, string | undefined>, hosts = ["claude", "codex"]) {
+  const dirs: { host: string; label: string; dir: string }[] = [];
+  if (hosts.includes("claude")) dirs.push({ host: "claude", label: "~/.claude/skills", dir: join(claudeDir(home, env), "skills") });
+  if (hosts.includes("codex")) {
+    dirs.push({ host: "codex", label: "~/.codex/skills", dir: join(codexDir(home, env), "skills") });
+    dirs.push({ host: "agents", label: "~/.agents/skills", dir: join(home, ".agents", "skills") });
+  }
+  return dirs;
 }
 
 export function checkSkills(opts: {
@@ -160,8 +186,8 @@ export function checkSkills(opts: {
   // Without the bundled skills there is nothing to compare against.
   if (bundled.size === 0) return { issues: [], claudeCodeHasNoSkill: false };
 
-  const claudePlugins = claudePluginSources(home, cwd);
-  const sources = [...claudePlugins, ...codexPluginSources(home), ...folderSources(home, cwd)];
+  const claudePlugins = claudePluginSources(home, cwd, env);
+  const sources = [...claudePlugins, ...codexPluginSources(home, env), ...folderSources(home, cwd, env)];
 
   const issues: SkillIssue[] = [];
   let claudeFolderCopy = false;
@@ -174,7 +200,8 @@ export function checkSkills(opts: {
         if (isPlugin) issues.push({ source, skill: name, problem: "missing" });
         continue;
       }
-      if (name === "make-fixer" && !isPlugin && !source.label.includes(".codex")) claudeFolderCopy = true;
+      const readByClaude = source.label === "~/.claude/skills" || source.label.endsWith(join(".claude", "skills"));
+      if (name === "make-fixer" && !isPlugin && readByClaude) claudeFolderCopy = true;
       if (actual !== expected) issues.push({ source, skill: name, problem: "differs" });
     }
   }
@@ -225,9 +252,28 @@ export function warnIfSkillsOutdated(cliVersion: string): void {
 
 type Runner = (cmd: string[]) => { ok: boolean; out: string };
 
-const defaultRunner: Runner = (cmd) => {
+/**
+ * npm installs `claude`/`codex` on Windows as .cmd shims, which can't be spawned directly; run them through
+ * cmd.exe. Arguments here are fixed tokens (no quotes or metacharacters), so verbatim joining is safe.
+ */
+export function spawnCommand(cmd: string[], platform: string = process.platform): { argv: string[]; verbatim: boolean } {
+  const [bin, ...args] = cmd;
+  if (platform === "win32" && bin && /\.(cmd|bat)$/i.test(bin)) {
+    return { argv: ["cmd.exe", "/d", "/s", "/c", `""${bin}" ${args.join(" ")}"`], verbatim: true };
+  }
+  return { argv: cmd, verbatim: false };
+}
+
+export const defaultRunner: Runner = (cmd) => {
   try {
-    const proc = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 180_000 });
+    const { argv, verbatim } = spawnCommand(cmd);
+    const proc = Bun.spawnSync(argv, {
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 180_000,
+      windowsHide: true,
+      windowsVerbatimArguments: verbatim,
+    });
     return { ok: proc.exitCode === 0, out: `${proc.stdout.toString()}${proc.stderr.toString()}`.trim() };
   } catch (e) {
     return { ok: false, out: String(e) };
@@ -245,6 +291,7 @@ export interface SkillFixOptions {
   run?: Runner;
   log?: (msg: string) => void;
   now?: () => Date;
+  env?: Record<string, string | undefined>;
 }
 
 function firstLine(out: string): string {
@@ -256,24 +303,37 @@ function firstLine(out: string): string {
  * personal copy overrides the plugin and never updates. Folders go to ~/.make-fixer/skill-backups; symlinks
  * are just removed.
  */
-function removePersonalCopies(home: string, tools: string[], backupRoot: string, log: (m: string) => void) {
-  for (const tool of tools) {
+function removePersonalCopies(
+  dirs: { host: string; label: string; dir: string }[],
+  backupRoot: string,
+  log: (m: string) => void,
+) {
+  for (const { host, label, dir } of dirs) {
     for (const name of SKILL_NAMES) {
-      const path = join(home, tool, "skills", name);
+      const path = join(dir, name);
       let stat;
       try {
         stat = lstatSync(path);
       } catch {
         continue;
       }
-      if (stat.isSymbolicLink()) {
-        unlinkSync(path);
-        log(`  removed symlink ~/${tool}/skills/${name} (the plugin provides it)\n`);
-      } else {
-        const dest = join(backupRoot, tool.replace(/^\./, ""), name);
-        mkdirSync(dirname(dest), { recursive: true });
-        renameSync(path, dest);
-        log(`  moved personal copy ~/${tool}/skills/${name} → ${dest}\n`);
+      try {
+        if (stat.isSymbolicLink()) {
+          // A directory symlink or junction on Windows needs rmdir; unlink works elsewhere.
+          try {
+            unlinkSync(path);
+          } catch {
+            rmdirSync(path);
+          }
+          log(`  removed symlink ${label}/${name} (the plugin provides it)\n`);
+        } else {
+          const dest = join(backupRoot, host, name);
+          mkdirSync(dirname(dest), { recursive: true });
+          renameSync(path, dest);
+          log(`  moved personal copy ${label}/${name} → ${dest}\n`);
+        }
+      } catch (e) {
+        log(`⚠ could not remove ${label}/${name}: ${(e as Error).message}. Delete it by hand.\n`);
       }
     }
   }
@@ -291,6 +351,7 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
   const which = opts.which ?? ((bin: string) => Bun.which(bin));
   const run = opts.run ?? defaultRunner;
   const log = opts.log ?? ((msg: string) => void process.stderr.write(msg));
+  const env = opts.env ?? process.env;
   const stamp = (opts.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, "-");
   const backupRoot = join(home, ".make-fixer", "skill-backups", stamp);
 
@@ -301,7 +362,7 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
     }
     run([claude, "plugin", "marketplace", "update", MARKETPLACE]);
     const scopes = new Set(
-      claudePluginSources(home, cwd)
+      claudePluginSources(home, cwd, env)
         .filter((s) => s.label.includes(PLUGIN))
         .map((s) => /\((\w+) scope\)/.exec(s.label)?.[1])
         .filter((s): s is string => s != null),
@@ -318,7 +379,7 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
       const r = run([claude, "plugin", "update", PLUGIN, "--scope", scope]);
       if (!r.ok) log(`⚠ Claude Code: could not update ${PLUGIN} (${scope} scope): ${firstLine(r.out)}\n`);
     }
-    if (user.ok) removePersonalCopies(home, [".claude"], backupRoot, log);
+    if (user.ok) removePersonalCopies(personalSkillDirs(home, env, ["claude"]), backupRoot, log);
   } else {
     log("  Claude Code CLI (claude) not on PATH; skipped.\n");
   }
@@ -337,7 +398,7 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
     const r = run([codex, "plugin", "add", PLUGIN, "--json"]);
     log(r.ok ? `↻ Codex: ${PLUGIN} installed/updated. Restart Codex to load it.\n`
              : `⚠ Codex: could not install/update ${PLUGIN}: ${firstLine(r.out)}\n`);
-    if (r.ok) removePersonalCopies(home, [".codex", ".agents"], backupRoot, log);
+    if (r.ok) removePersonalCopies(personalSkillDirs(home, env, ["codex"]), backupRoot, log);
   } else {
     log("  Codex CLI (codex) not on PATH; skipped.\n");
   }

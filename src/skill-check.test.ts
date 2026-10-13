@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSkills, formatSkillWarning, fixSkillInstalls, skillFingerprint } from "./skill-check";
+import { chmodSync } from "node:fs";
+import {
+  checkSkills,
+  defaultRunner,
+  fixSkillInstalls,
+  formatSkillWarning,
+  skillFingerprint,
+  spawnCommand,
+} from "./skill-check";
 
 let root: string;
 let home: string;
@@ -52,6 +60,14 @@ describe("skillFingerprint", () => {
     expect(skillFingerprint(a)).toBe(skillFingerprint(b));
   });
 
+  test("ignores CRLF vs LF line endings (Git on Windows)", () => {
+    const a = join(root, "a");
+    const b = join(root, "b");
+    writeSkill(a, "line1\nline2\n");
+    writeSkill(b, "line1\r\nline2\r\n");
+    expect(skillFingerprint(a)).toBe(skillFingerprint(b));
+  });
+
   test("changes when a reference file changes", () => {
     const a = join(root, "a");
     const b = join(root, "b");
@@ -71,7 +87,7 @@ describe("checkSkills", () => {
 
   test("a symlink to the bundled skills is in sync", () => {
     mkdirSync(join(home, ".codex", "skills"), { recursive: true });
-    symlinkSync(join(bundled, "make-fixer"), join(home, ".codex", "skills", "make-fixer"));
+    symlinkSync(join(bundled, "make-fixer"), join(home, ".codex", "skills", "make-fixer"), "junction");
     expect(check().issues).toEqual([]);
   });
 
@@ -102,6 +118,18 @@ describe("checkSkills", () => {
   test("a stale project copy in a parent folder is reported", () => {
     writeSkill(join(home, "work", ".claude", "skills", "make-fixer"), "old");
     expect(check().issues[0]).toMatchObject({ source: { kind: "project" } });
+  });
+
+  test("honors CLAUDE_CONFIG_DIR and CODEX_HOME", () => {
+    writeSkill(join(root, "claude-cfg", "skills", "make-fixer"), "old");
+    writeSkill(join(root, "codex-cfg", "skills", "make-fixer"), "old");
+    const env = { CLAUDE_CONFIG_DIR: join(root, "claude-cfg"), CODEX_HOME: join(root, "codex-cfg") };
+    expect(check(env).issues).toHaveLength(2);
+  });
+
+  test("a ~/.agents copy doesn't count as a Claude Code skill", () => {
+    writeSkill(join(home, ".agents", "skills", "make-fixer"), "current", { "references/debugging.md": "bundles" });
+    expect(check({ CLAUDECODE: "1" }).claudeCodeHasNoSkill).toBe(true);
   });
 
   test("Claude Code with no skill for this directory is flagged", () => {
@@ -181,7 +209,7 @@ describe("fixSkillInstalls", () => {
   test("moves personal copies aside and removes symlinks once the plugin is installed", () => {
     writeSkill(join(home, ".claude", "skills", "make-fixer"), "old");
     mkdirSync(join(home, ".codex", "skills"), { recursive: true });
-    symlinkSync(join(bundled, "make-fixer"), join(home, ".codex", "skills", "make-fixer"));
+    symlinkSync(join(bundled, "make-fixer"), join(home, ".codex", "skills", "make-fixer"), "junction");
     writeSkill(join(home, ".agents", "skills", "make-execution-data"), "old");
     fixSkillInstalls(fake({ "codex plugin marketplace list": codexHasMarketplace }).opts);
     expect(existsSync(join(home, ".claude", "skills", "make-fixer"))).toBe(false);
@@ -212,5 +240,37 @@ describe("fixSkillInstalls", () => {
     fixSkillInstalls({ ...f.opts, which: (bin) => (bin === "codex" ? "codex" : null) });
     expect(f.calls.some((c) => c.startsWith("claude"))).toBe(false);
     expect(f.logs.join("")).toContain("claude) not on PATH");
+  });
+});
+
+describe("spawning claude/codex", () => {
+  test("Windows .cmd shims run through cmd.exe; everything else runs directly", () => {
+    const shim = "C:\\Program Files\\nodejs\\claude.cmd";
+    expect(spawnCommand([shim, "plugin", "list"], "win32")).toEqual({
+      argv: ["cmd.exe", "/d", "/s", "/c", `""${shim}" plugin list"`],
+      verbatim: true,
+    });
+    expect(spawnCommand(["C:\\bin\\claude.exe", "plugin"], "win32").verbatim).toBe(false);
+    expect(spawnCommand(["/usr/local/bin/claude", "plugin"], "darwin")).toEqual({
+      argv: ["/usr/local/bin/claude", "plugin"],
+      verbatim: false,
+    });
+  });
+
+  test("the real runner passes arguments to a shim on this OS (folder with a space)", () => {
+    const dir = join(root, "bin dir");
+    mkdirSync(dir, { recursive: true });
+    let bin: string;
+    if (process.platform === "win32") {
+      bin = join(dir, "fake-claude.cmd");
+      writeFileSync(bin, "@echo off\r\necho args:%*\r\n");
+    } else {
+      bin = join(dir, "fake-claude");
+      writeFileSync(bin, '#!/bin/sh\necho "args:$*"\n');
+      chmodSync(bin, 0o755);
+    }
+    const r = defaultRunner([bin, "plugin", "update", "make-fixer@optimate-plugins", "--scope", "user"]);
+    expect(r.ok).toBe(true);
+    expect(r.out.trim()).toBe("args:plugin update make-fixer@optimate-plugins --scope user");
   });
 });
