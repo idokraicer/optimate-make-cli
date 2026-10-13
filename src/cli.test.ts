@@ -25,6 +25,7 @@ async function runInspect(
     env: {
       ...process.env,
       MAKE_FIXER_NO_UPDATE: "1",
+      MAKE_FIXER_SKIP_SKILL_CHECK: "1",
       MAKE_FIXER_RATE_DB: join(options.cwd ?? tmpdir(), "inspect-rate.sqlite"),
       ...(options.home ? { HOME: options.home } : {}),
       ...(options.token ? { MAKE_API_TOKEN: options.token } : {}),
@@ -56,6 +57,7 @@ async function runCli(
       ...process.env,
       MAKE_API_TOKEN: "fake",
       MAKE_FIXER_NO_UPDATE: "1",
+      MAKE_FIXER_SKIP_SKILL_CHECK: "1",
       MAKE_FIXER_RATE_DB: join(options.cwd, "rate.sqlite"),
     },
   });
@@ -90,6 +92,7 @@ describe("CLI commands", () => {
       env: {
         ...process.env,
         MAKE_FIXER_NO_UPDATE: "1",
+      MAKE_FIXER_SKIP_SKILL_CHECK: "1",
         MAKE_FIXER_RATE_DB: ":memory:",
       },
     });
