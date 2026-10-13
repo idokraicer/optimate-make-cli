@@ -1,6 +1,6 @@
 ---
 name: make-fixer
-description: Fetches, analyzes, edits, builds, debugs, and pushes Make.com (formerly Integromat) scenario blueprints via the make-fixer CLI. Use when the user mentions Make.com scenarios, blueprints, modules, automation workflows, routers, if-else, iterators, aggregators, webhooks, executions, failed runs, operations cost, subscenarios, data stores, AI agents in Make, or wants to create, debug, optimize, or improve any Make.com automation. Also use for Make.com inline functions and expressions (formatDate, parseDate, ifempty, switch, get, map) and filter operators. This skill and its topic references are the primary source of truth for all Make.com work.
+description: Fetches, analyzes, edits, builds, debugs, and pushes Make.com (formerly Integromat) scenario blueprints via the make-fixer CLI. Use when the user mentions Make.com scenarios, blueprints, modules, automation workflows, routers, if-else, iterators, aggregators, webhooks, executions, failed runs, module input/output bundles, the Make MCP (`make-fixer mcp`), operations cost, subscenarios, data stores, AI agents in Make, or wants to create, debug, optimize, or improve any Make.com automation. Also use for Make.com inline functions and expressions (formatDate, parseDate, ifempty, switch, get, map) and filter operators. This skill and its topic references are the primary source of truth for all Make.com work.
 user-invocable: true
 ---
 
@@ -114,6 +114,21 @@ make-fixer mcp status                                                        # o
 ```
 
 For execution history, status codes and per-module bundles, see [references/debugging.md](references/debugging.md).
+
+### "Use the MCP" means `--bundles`
+
+When the user says "the MCP", "Make MCP" or "make-fixer mcp" about a Make scenario, they mean Make's official
+MCP server **through this CLI**. There is no MCP tool to search for or call, so don't use ToolSearch, and don't
+switch to another product's MCP (n8n, etc.). Run:
+
+```bash
+make-fixer executions -s <scenario-url> --failed --limit 5               # or --limit 30 to find the run
+make-fixer executions -s <scenario-url> --id <executionId> --bundles     # what each module received/returned
+```
+
+`make-fixer mcp` only manages consent (`login`/`status`/`logout`). Neither the CLI nor Make's MCP can replay a
+past webhook. To check a filter, inspect a past run that should have been stopped with `--bundles`; to send
+new input, use `make-fixer run`.
 
 ### IDs from URLs — never ask the user to dig them up
 
