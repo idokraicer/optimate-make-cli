@@ -1,6 +1,6 @@
 ---
 name: make-execution-data
-description: Gets the real per-module input/output bundles of a Make.com scenario run (what Make's run-history inspector shows) through the make-fixer CLI and Make's official MCP server, including the per-organization OAuth consent it needs. Use when debugging why a Make run failed or produced wrong data, when an e2e probe needs to assert on what each module received or returned, or when the user asks for "execution data", "bundles", "module output", "what did module X get", or hits MCP_CONSENT_REQUIRED / MCP_ORGANIZATION_MISMATCH.
+description: Gets the real per-module input/output bundles of a Make.com scenario run (what Make's run-history inspector shows) through the make-fixer CLI and Make's official MCP server, including the per-organization OAuth consent it needs. Use when debugging why a Make run failed or produced wrong data, when an e2e probe needs to assert on what each module received or returned, or when the user asks for "execution data", "bundles", "module output", "what did module X get", says "use the MCP", "Make MCP" or "make-fixer mcp", or hits MCP_CONSENT_REQUIRED / MCP_ORGANIZATION_MISMATCH.
 user-invocable: true
 ---
 

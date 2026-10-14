@@ -36,6 +36,9 @@ in the OS credential store (macOS Keychain / libsecret / Windows Credential Mana
 Commands that need an organization without a grant open the consent page automatically
 (pass --no-consent to fail instead).
 
+These commands only manage consent. To read a run's data through the MCP:
+  make-fixer executions -s <SCENARIO_ID_OR_URL> --id <EXECUTION_ID> --bundles
+
 Examples:
   make-fixer mcp login --org <ORG_ID>
   make-fixer mcp login --from-url "https://eu1.make.com/<TEAM_ID>/scenarios/<SCENARIO_ID>/edit"
