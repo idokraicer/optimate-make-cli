@@ -4,8 +4,10 @@
 //
 //   bun scripts/e2e-skill-install.ts
 //
-// Needs `claude` and `codex` on PATH and network access to GitHub. Exits 1 on any failed check.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+// Needs `claude` and `codex` on PATH. By default it installs from a local `optimate-plugins` marketplace built
+// from this repo's skills (the real repo is private, so CI can't clone it). E2E_REAL_MARKETPLACE=1 uses the
+// real GitHub marketplace instead (needs GitHub access). Exits 1 on any failed check.
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkSkills, defaultRunner, fixSkillInstalls } from "../src/skill-check";
@@ -25,6 +27,29 @@ for (const dir of [join(claudeDir, "skills", "make-fixer"), join(codexDir, "skil
   writeFileSync(join(dir, "SKILL.md"), "---\nname: make-fixer\ndescription: stale\n---\nstale\n");
 }
 
+// A local copy of the optimate-plugins marketplace, containing only make-fixer with this repo's skills.
+let marketplaceSource: string | undefined;
+if (process.env.E2E_REAL_MARKETPLACE !== "1") {
+  const market = join(root, "optimate-plugins");
+  const plugin = join(market, "plugins", "make-fixer");
+  const manifest = { name: "make-fixer", description: "make-fixer e2e", version: "0.0.0-e2e" };
+  mkdirSync(join(market, ".claude-plugin"), { recursive: true });
+  writeFileSync(
+    join(market, ".claude-plugin", "marketplace.json"),
+    JSON.stringify({
+      name: "optimate-plugins",
+      owner: { name: "e2e" },
+      plugins: [{ ...manifest, source: "./plugins/make-fixer" }],
+    }),
+  );
+  for (const host of [".claude-plugin", ".codex-plugin"]) {
+    mkdirSync(join(plugin, host), { recursive: true });
+    writeFileSync(join(plugin, host, "plugin.json"), JSON.stringify(manifest));
+  }
+  cpSync(join(import.meta.dir, "..", "skills"), join(plugin, "skills"), { recursive: true });
+  marketplaceSource = market;
+}
+
 const failures: string[] = [];
 const ok = (cond: boolean, what: string) => {
   console.log(`${cond ? "✔" : "✘"} ${what}`);
@@ -41,6 +66,7 @@ fixSkillInstalls({
   home,
   cwd: home,
   env,
+  marketplaceSource,
   run: (cmd, runEnv) => {
     const r = defaultRunner(cmd, runEnv);
     console.log(`$ ${cmd.join(" ")}  → ${r.ok ? "ok" : "FAILED"}\n${r.out.replace(/^/gm, "    ")}`);
@@ -75,6 +101,7 @@ ok(existsSync(backups), `backups kept in ${backups}`);
 
 const result = checkSkills({ home, cwd: home, env });
 ok(!result.claudeCodeHasNoSkill, "skill check sees the Claude Code plugin");
+if (marketplaceSource) ok(result.issues.length === 0, "installed plugin skills match this CLI's skills");
 ok(
   result.issues.every((i) => i.source.kind === "claude-plugin" || i.source.kind === "codex-plugin"),
   "no personal or project copies left",

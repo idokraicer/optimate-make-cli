@@ -295,6 +295,8 @@ export interface SkillFixOptions {
   log?: (msg: string) => void;
   now?: () => Date;
   env?: Record<string, string | undefined>;
+  /** Where to add the marketplace from when it's missing (default: the optimate-plugins GitHub repo). */
+  marketplaceSource?: string;
 }
 
 /** The lines that explain a failure: progress chatter and warnings first, the actual error last. */
@@ -356,6 +358,7 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
   const cwd = opts.cwd ?? process.cwd();
   const which = opts.which ?? ((bin: string) => Bun.which(bin));
   const env = opts.env ?? process.env;
+  const source = opts.marketplaceSource ?? MARKETPLACE_SOURCE;
   const runner = opts.run ?? defaultRunner;
   const run = (cmd: string[]) => runner(cmd, env);
   const log = opts.log ?? ((msg: string) => void process.stderr.write(msg));
@@ -365,7 +368,7 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
   const claude = which("claude");
   if (claude) {
     if (!run([claude, "plugin", "marketplace", "list"]).out.includes(MARKETPLACE)) {
-      run([claude, "plugin", "marketplace", "add", MARKETPLACE_SOURCE]);
+      run([claude, "plugin", "marketplace", "add", source]);
     }
     run([claude, "plugin", "marketplace", "update", MARKETPLACE]);
     const scopes = new Set(
@@ -400,7 +403,7 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
     } catch {
       // Unparseable output: try adding; Codex rejects duplicates harmlessly.
     }
-    if (!hasMarketplace) run([codex, "plugin", "marketplace", "add", MARKETPLACE_SOURCE]);
+    if (!hasMarketplace) run([codex, "plugin", "marketplace", "add", source]);
     run([codex, "plugin", "marketplace", "upgrade", MARKETPLACE, "--json"]);
     const r = run([codex, "plugin", "add", PLUGIN, "--json"]);
     log(r.ok ? `↻ Codex: ${PLUGIN} installed/updated. Restart Codex to load it.\n`
