@@ -144,7 +144,7 @@ eu1/eu2/us1/us2 and caches the zone in `~/.make-fixer/.zones.json`. With no URL 
 ## Workflow
 
 <HARD-GATE>
-Do NOT edit the blueprint, push changes, add notes, or take any implementation action until you have presented a plan of changes and the user has approved it. This applies to EVERY scenario regardless of perceived simplicity.
+Do NOT edit the blueprint, push changes, add notes, or take any implementation action until you have presented a plan of changes and the user has approved it. This applies to EVERY scenario regardless of perceived simplicity. When the scenario finds, updates, or links records, the plan is the approved flow preview from `make-fixer:make-build-verification`, and no data-contract row may still be an open assumption.
 </HARD-GATE>
 
 **Mode:**
@@ -179,11 +179,16 @@ Ask **one question per message**, multiple-choice when possible.
   - the end goal;
   - every app **by name** (ask when the user names a category like "email" or "AI");
   - the data flow;
+  - how each record the scenario finds, updates, or links is identified (which field, and is it unique);
   - what happens to items that don't match;
   - failure requirements;
   - volume and frequency;
   - edge cases.
 - Keep asking until the picture is clear.
+
+**Records involved?** If the scenario searches, updates, or links records in another system, use
+`make-fixer:make-build-verification` now: build the data contract from the real structure, then present the flow
+preview in Phase 3.
 
 ### Phase 3 — Propose
 
@@ -203,9 +208,11 @@ Ask **one question per message**, multiple-choice when possible.
 ### Phase 5 — Push & verify
 
 1. Get explicit confirmation, then run `make-fixer push -s <id> --yes`.
-2. Verify with a real run where possible:
-   - polling, scheduled and on-demand scenarios can be run directly;
-   - a webhook only runs on a real request, so have the user send one;
+2. Verify with a real run:
+   - when the scenario finds, updates, or links records, run the required e2e test from
+     `make-fixer:make-build-verification` (decoy record, bundle assertions, cleanup by ID) before activating;
+   - otherwise: polling, scheduled and on-demand scenarios run with `make-fixer run`; send a webhook's test
+     request yourself;
    - then check `make-fixer executions`.
 
 ## Hard rules
