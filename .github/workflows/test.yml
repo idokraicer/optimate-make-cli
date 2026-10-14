@@ -20,3 +20,24 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+
+  # `make-fixer update`'s skill fix against the real Claude Code and Codex CLIs, in throwaway config folders.
+  # npm (not bun) on purpose: it installs them as .cmd shims on Windows, the case that needs cmd.exe.
+  e2e-skill-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - run: npm install -g @anthropic-ai/claude-code @openai/codex
+      - run: bun -e "console.log(Bun.which('claude'), Bun.which('codex'))"
+      - run: bun scripts/e2e-skill-install.ts

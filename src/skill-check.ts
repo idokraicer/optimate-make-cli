@@ -250,7 +250,7 @@ export function warnIfSkillsOutdated(cliVersion: string): void {
   }
 }
 
-type Runner = (cmd: string[]) => { ok: boolean; out: string };
+type Runner = (cmd: string[], env?: Record<string, string | undefined>) => { ok: boolean; out: string };
 
 /**
  * npm installs `claude`/`codex` on Windows as .cmd shims, which can't be spawned directly; run them through
@@ -264,7 +264,7 @@ export function spawnCommand(cmd: string[], platform: string = process.platform)
   return { argv: cmd, verbatim: false };
 }
 
-export const defaultRunner: Runner = (cmd) => {
+export const defaultRunner: Runner = (cmd, env = process.env) => {
   try {
     const { argv, verbatim } = spawnCommand(cmd);
     const proc = Bun.spawnSync(argv, {
@@ -273,6 +273,9 @@ export const defaultRunner: Runner = (cmd) => {
       timeout: 180_000,
       windowsHide: true,
       windowsVerbatimArguments: verbatim,
+      // Pass env explicitly: without it Bun spawns with the environment from process start, ignoring later
+      // process.env changes (e.g. CLAUDE_CONFIG_DIR / CODEX_HOME).
+      env,
     });
     return { ok: proc.exitCode === 0, out: `${proc.stdout.toString()}${proc.stderr.toString()}`.trim() };
   } catch (e) {
@@ -349,9 +352,10 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
   const home = opts.home ?? homedir();
   const cwd = opts.cwd ?? process.cwd();
   const which = opts.which ?? ((bin: string) => Bun.which(bin));
-  const run = opts.run ?? defaultRunner;
-  const log = opts.log ?? ((msg: string) => void process.stderr.write(msg));
   const env = opts.env ?? process.env;
+  const runner = opts.run ?? defaultRunner;
+  const run = (cmd: string[]) => runner(cmd, env);
+  const log = opts.log ?? ((msg: string) => void process.stderr.write(msg));
   const stamp = (opts.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, "-");
   const backupRoot = join(home, ".make-fixer", "skill-backups", stamp);
 

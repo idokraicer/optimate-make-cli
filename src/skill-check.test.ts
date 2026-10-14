@@ -273,4 +273,18 @@ describe("spawning claude/codex", () => {
     expect(r.ok).toBe(true);
     expect(r.out.trim()).toBe("args:plugin update make-fixer@optimate-plugins --scope user");
   });
+
+  test("fixSkillInstalls passes its env to the spawned CLIs (Bun ignores later process.env changes)", () => {
+    const seen: (string | undefined)[] = [];
+    fixSkillInstalls({
+      home,
+      cwd: project,
+      env: { CLAUDE_CONFIG_DIR: "/custom/claude" },
+      which: (bin) => (bin === "claude" ? "claude" : null),
+      run: (_cmd, env) => (seen.push(env?.CLAUDE_CONFIG_DIR), { ok: true, out: "" }),
+      log: () => {},
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((v) => v === "/custom/claude")).toBe(true);
+  });
 });
