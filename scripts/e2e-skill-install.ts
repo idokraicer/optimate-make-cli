@@ -86,7 +86,7 @@ ok(
 const codexList = defaultRunner([Bun.which("codex") ?? "codex", "plugin", "list", "--json"]);
 let codexInstalled = false;
 try {
-  codexInstalled = (JSON.parse(codexList.out).installed ?? []).some(
+  codexInstalled = (JSON.parse(codexList.stdout ?? codexList.out).installed ?? []).some(
     (p: { pluginId?: string; installed?: boolean }) => p.pluginId === "make-fixer@optimate-plugins" && p.installed,
   );
 } catch {

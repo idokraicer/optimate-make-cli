@@ -250,7 +250,11 @@ export function warnIfSkillsOutdated(cliVersion: string): void {
   }
 }
 
-type Runner = (cmd: string[], env?: Record<string, string | undefined>) => { ok: boolean; out: string };
+/** `out` is stdout + stderr for messages; parse JSON from `stdout` only (CLIs print warnings on stderr). */
+type Runner = (
+  cmd: string[],
+  env?: Record<string, string | undefined>,
+) => { ok: boolean; out: string; stdout?: string };
 
 /**
  * npm installs `claude`/`codex` on Windows as .cmd shims, which can't be spawned directly; run them through
@@ -277,7 +281,8 @@ export const defaultRunner: Runner = (cmd, env = process.env) => {
       // process.env changes (e.g. CLAUDE_CONFIG_DIR / CODEX_HOME).
       env,
     });
-    return { ok: proc.exitCode === 0, out: `${proc.stdout.toString()}${proc.stderr.toString()}`.trim() };
+    const stdout = proc.stdout.toString();
+    return { ok: proc.exitCode === 0, out: `${stdout}${proc.stderr.toString()}`.trim(), stdout };
   } catch (e) {
     return { ok: false, out: String(e) };
   }
@@ -398,7 +403,8 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
   if (codex) {
     let hasMarketplace = false;
     try {
-      const { marketplaces } = JSON.parse(run([codex, "plugin", "marketplace", "list", "--json"]).out);
+      const r = run([codex, "plugin", "marketplace", "list", "--json"]);
+      const { marketplaces } = JSON.parse(r.stdout ?? r.out);
       hasMarketplace = (marketplaces ?? []).some((m: { name?: string }) => m.name === MARKETPLACE);
     } catch {
       // Unparseable output: try adding; Codex rejects duplicates harmlessly.

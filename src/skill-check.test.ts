@@ -287,4 +287,22 @@ describe("spawning claude/codex", () => {
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every((v) => v === "/custom/claude")).toBe(true);
   });
+
+  test("parses Codex JSON from stdout even when stderr has warnings", () => {
+    const calls: string[] = [];
+    fixSkillInstalls({
+      home,
+      cwd: project,
+      which: (bin) => (bin === "codex" ? "codex" : null),
+      run: (cmd) => {
+        calls.push(cmd.join(" "));
+        const json = JSON.stringify({ marketplaces: [{ name: "optimate-plugins" }] });
+        return cmd.includes("list")
+          ? { ok: true, out: `${json}\nWARNING: could not create PATH aliases`, stdout: json }
+          : { ok: true, out: "" };
+      },
+      log: () => {},
+    });
+    expect(calls.some((c) => c.includes("marketplace add"))).toBe(false);
+  });
 });
