@@ -297,8 +297,11 @@ export interface SkillFixOptions {
   env?: Record<string, string | undefined>;
 }
 
-function firstLine(out: string): string {
-  return out.split("\n").find((l) => l.trim()) ?? "unknown error";
+/** The lines that explain a failure: progress chatter and warnings first, the actual error last. */
+function errorText(out: string): string {
+  const lines = out.split("\n").map((l) => l.trim()).filter(Boolean);
+  const errors = lines.filter((l) => /error|fail|not found|denied|refus/i.test(l) && !/^warning:/i.test(l));
+  return (errors.length > 0 ? errors : lines).slice(-3).join(" | ") || "unknown error";
 }
 
 /**
@@ -377,11 +380,11 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
       : run([claude, "plugin", "install", PLUGIN, "--scope", "user"]);
     log(user.ok
       ? `↻ Claude Code: ${PLUGIN} ${scopes.has("user") ? "updated" : "installed"} (user scope). Restart Claude Code to load it.\n`
-      : `⚠ Claude Code: could not install/update ${PLUGIN}: ${firstLine(user.out)}\n`);
+      : `⚠ Claude Code: could not install/update ${PLUGIN}: ${errorText(user.out)}\n`);
     for (const scope of scopes) {
       if (scope === "user") continue;
       const r = run([claude, "plugin", "update", PLUGIN, "--scope", scope]);
-      if (!r.ok) log(`⚠ Claude Code: could not update ${PLUGIN} (${scope} scope): ${firstLine(r.out)}\n`);
+      if (!r.ok) log(`⚠ Claude Code: could not update ${PLUGIN} (${scope} scope): ${errorText(r.out)}\n`);
     }
     if (user.ok) removePersonalCopies(personalSkillDirs(home, env, ["claude"]), backupRoot, log);
   } else {
@@ -401,7 +404,7 @@ export function fixSkillInstalls(opts: SkillFixOptions = {}): void {
     run([codex, "plugin", "marketplace", "upgrade", MARKETPLACE, "--json"]);
     const r = run([codex, "plugin", "add", PLUGIN, "--json"]);
     log(r.ok ? `↻ Codex: ${PLUGIN} installed/updated. Restart Codex to load it.\n`
-             : `⚠ Codex: could not install/update ${PLUGIN}: ${firstLine(r.out)}\n`);
+             : `⚠ Codex: could not install/update ${PLUGIN}: ${errorText(r.out)}\n`);
     if (r.ok) removePersonalCopies(personalSkillDirs(home, env, ["codex"]), backupRoot, log);
   } else {
     log("  Codex CLI (codex) not on PATH; skipped.\n");

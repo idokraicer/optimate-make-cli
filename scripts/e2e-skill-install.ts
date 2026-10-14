@@ -36,7 +36,17 @@ for (const bin of ["claude", "codex"]) {
   ok(path != null, `${bin} on PATH (${path ?? "missing"})`);
 }
 
-fixSkillInstalls({ home, cwd: home, env });
+// Log every CLI call and its output so CI failures are diagnosable.
+fixSkillInstalls({
+  home,
+  cwd: home,
+  env,
+  run: (cmd, runEnv) => {
+    const r = defaultRunner(cmd, runEnv);
+    console.log(`$ ${cmd.join(" ")}  → ${r.ok ? "ok" : "FAILED"}\n${r.out.replace(/^/gm, "    ")}`);
+    return r;
+  },
+});
 
 const installed = join(claudeDir, "plugins", "installed_plugins.json");
 const claudeEntries = existsSync(installed)
