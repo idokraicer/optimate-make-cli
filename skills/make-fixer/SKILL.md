@@ -144,7 +144,7 @@ eu1/eu2/us1/us2 and caches the zone in `~/.make-fixer/.zones.json`. With no URL 
 ## Workflow
 
 <HARD-GATE>
-Do NOT edit the blueprint, push changes, add notes, or take any implementation action until you have presented a plan of changes and the user has approved it. This applies to EVERY scenario regardless of perceived simplicity. When the scenario finds, updates, or links records, the plan is the approved flow preview from `make-fixer:make-build-verification`, and no data-contract row may still be an open assumption.
+Do NOT edit the blueprint, push changes, add notes, or take any implementation action until you have presented a plan of changes and the user has approved it. This applies to EVERY scenario regardless of perceived simplicity. The plan is the visual flow preview or the text plan, whichever the user chose in Phase 3. When the scenario finds, updates, or links records, no data-contract row from `make-fixer:make-build-verification` may still be an open assumption.
 </HARD-GATE>
 
 **Mode:**
@@ -187,8 +187,7 @@ Ask **one question per message**, multiple-choice when possible.
 - Keep asking until the picture is clear.
 
 **Records involved?** If the scenario searches, updates, or links records in another system, use
-`make-fixer:make-build-verification` now: build the data contract from the real structure, then present the flow
-preview in Phase 3.
+`make-fixer:make-build-verification` now: build the data contract from the real structure before you propose.
 
 ### Phase 3 — Propose
 
@@ -196,7 +195,31 @@ preview in Phase 3.
   complexity and reliability. Use a single plan when the change is straightforward.
 - List the exact edits: modules added, removed or changed, and the fields touched.
 - Don't over-build: no handlers, aggregators, variables or data stores unless the design needs them.
-- Get explicit approval.
+- Ask how to show the plan (below), then show it and get explicit approval.
+
+#### Show the plan: visual or text
+
+Once the approach is settled, and before you list the edits for approval, ask this for every scenario, new or
+existing. Ask it on its own, in the user's language:
+
+**"How do you want to review the plan?**
+
+- **Visual flow** - I open a Make-style canvas in your browser: every module, filter, and route, with added,
+  changed, and removed modules marked when we edit an existing scenario. Takes me a few minutes to build.
+- **Text** - I list the modules and edits here in chat. Fastest; harder to follow once the flow branches.
+
+**For this plan I recommend <one of the two>, because <one sentence about this plan: how many modules or routes
+change, whether records are looked up, how many people will review it>. Which do you prefer?"**
+
+Recommend **Visual flow** when the plan adds or removes a router, looks records up, or touches more than two
+modules; recommend **Text** for a change to one or two fields. Skip the question when the user already answered it
+in this conversation ("always show me the canvas", "just text"), and use that answer.
+
+- **Visual flow chosen:** build the flow preview from `make-fixer:make-build-verification`
+  (`references/flow-preview.md`; `"mode": "edit"` for an existing scenario), run its checker, open it, and print
+  its plain-text summary beside it. The user approves the page.
+- **Text chosen:** list every module added, removed, or changed with the fields touched (`+`, `~` before → after,
+  `−`), plus the data-contract rows when records are looked up. The user approves the text.
 
 ### Phase 4 — Edit & validate
 
