@@ -24,9 +24,10 @@ trigger applies, not up front.
 | A run failed, "what's broken?", execution history, per-module bundles, a webhook receives nothing | [references/debugging.md](references/debugging.md) |
 | Subscenarios / on-demand, data stores and dedup, bulk or long runs, production settings | [references/architecture.md](references/architecture.md) |
 | AI provider modules, Make AI Tools, the AI Agent module and its tools | [references/ai.md](references/ai.md) |
-| Google Sheets, Gmail, date-math configuration | [references/app-gotchas.md](references/app-gotchas.md) |
+| Google Sheets, Gmail, Fireberry (`powerlink:*`) dropdowns, date-math configuration | [references/app-gotchas.md](references/app-gotchas.md) |
 | Naming, safe testing, pre-activation cost checklist, versioning | [references/conventions.md](references/conventions.md) |
 | monday.com modules or GraphQL in Make | the `monday-make-modules` skill |
+| Scalla CRM business processes, HTTP actions, fields, relationships or API failures | also use `scalla:scalla-api` when installed; it supplies the account-specific API contract while this skill owns Make construction. If unavailable, identify the missing expertise and verify Scalla contracts from sources before building. |
 
 ## Installation
 

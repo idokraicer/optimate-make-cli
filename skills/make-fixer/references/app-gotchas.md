@@ -1,6 +1,6 @@
 # App Gotchas
 
-Load before finalizing Google Sheets, Gmail or other Google app modules. These mistakes save cleanly and only
+Load before finalizing Google Sheets, Gmail, other Google app, or Fireberry (`powerlink:*`) modules. These mistakes save cleanly and only
 fail, or silently misbehave, at run time. (Make AI Tools model slugs are in `references/ai.md`; monday.com is
 covered by the `monday-make-modules` skill.)
 
@@ -25,6 +25,16 @@ covered by the `monday-make-modules` skill.)
 Gmail (`google-email:*`) uses a **different connection type** from Sheets, Calendar and Drive. Being
 connected to Google for Sheets does not cover Gmail. Some Gmail modules name the connection parameter
 `account` instead of `__IMTCONN__`, so check an existing blueprint.
+
+## Fireberry dropdowns
+
+Fireberry (`powerlink:*`) modules output a dropdown's **value** in the field itself (`{{1.pcfStatus}}` → `4`)
+and its **label** in a separate `<field>name` field (`{{1.pcfStatusname}}`).
+
+- When writing a dropdown back, map the value field directly. Never build a label→value `switch()`; it only
+  looks right while it falls through to its default.
+- Don't infer the module's output from the raw Fireberry REST query, which returns labels. Check the
+  module's `metadata.interface`.
 
 ## Dates
 
