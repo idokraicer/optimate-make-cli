@@ -69,22 +69,28 @@ success. Before the output module, branch on `exist` / `notexist` and send the e
 
 The retry's own `Break` stops a second 429 from looping forever.
 
-## Notify before the directive
+## Keep the failure visible
 
-On critical paths, put an alert (Slack/email with the error, key bundle data and scenario name) and an
-optional data-store log record **before** the directive in the `onerror` chain.
+Make emails the organization's members when a run ends in an error. A handler that ends in `Ignore`,
+`Resume` or `Commit` marks the run as a success, so no email goes out. On critical paths, keep that failure
+visible: let the run fail (`ThrowError`, `Rollback`), or write a failure record (a data-store row or a status on
+the record) **before** the directive in the `onerror` chain.
+
+An extra alert to the developer (Slack or email) is optional. Add it in the same place when the developer
+asks for one. Give it the scenario name, run link, failed module and a short safe error summary. Keep bundle
+data, payloads and the raw provider error out of it: the run link opens them inside Make.
 
 ## Webhooks
 
 - By default Make answers webhook callers `200 Accepted` immediately, so `Break` is fine.
 - **Only when the scenario uses `gateway:WebhookRespond`** for a custom response, add a `WebhookRespond`
   (status 4xx/5xx, error body) followed by `builtin:Commit` to the `onerror` chain, so the caller still gets
-  an answer:
+  an answer. Return a stable code and a safe message, never the provider's raw error text:
 
 ```json
 "onerror": [
   { "id": N, "module": "gateway:WebhookRespond", "version": 1,
-    "mapper": { "status": "400", "body": "{\"error\": \"{{5.error.message}}\"}",
+    "mapper": { "status": "502", "body": "{\"error\": \"provider_unavailable\", \"message\": \"The request could not be completed. Try again later.\"}",
                 "headers": [{ "key": "Content-Type", "value": "application/json" }] } },
   { "id": N1, "module": "builtin:Commit", "version": 1, "mapper": {} }
 ]

@@ -144,8 +144,11 @@ eu1/eu2/us1/us2 and caches the zone in `~/.make-fixer/.zones.json`. With no URL 
 ## Workflow
 
 <HARD-GATE>
-Do NOT edit the blueprint, push changes, add notes, or take any implementation action until you have presented a plan of changes and the user has approved it. This applies to EVERY scenario regardless of perceived simplicity. The plan is the visual flow preview or the text plan, whichever the user chose in Phase 3. When the scenario finds, updates, or links records, no data-contract row from `make-fixer:make-build-verification` may still be an open assumption.
+Do NOT edit the blueprint, push changes, add notes, or take any implementation action until the user has approved the plan of changes. For customer work, use the approved automation-delivery T1 plan. For standalone work, use the visual flow preview or text plan the user chose in Phase 3. When the scenario finds, updates, or links records, no data-contract row from `make-fixer:make-build-verification` may still be an open assumption.
 </HARD-GATE>
+
+For customer work, start with `optimate-project-template:automation-delivery`. It grounds the work in the
+customer task and owns design approval, independent QA, activation and hand-off.
 
 **Mode:**
 - An existing scenario (ID/URL) → Phase 1.
@@ -159,7 +162,8 @@ Do NOT edit the blueprint, push changes, add notes, or take any implementation a
    - what the scenario does (1–2 sentences);
    - module count and flow shape;
    - the issues `analyze` found;
-   - proactive suggestions, framed as "I also noticed a few things — want me to address any?":
+   - proactive suggestions. For customer work, bring any relevant decisions to T1. For standalone work,
+     ask "I also noticed a few things — want me to address any?":
      - **Cost:** modules that could be merged; an Iterator after a search module; a Get Variable after a Set on
        the same path; a router whose routes are mutually exclusive (→ if-else).
      - **Risky failure points:** external calls where a failure is costly (payments, sync,
@@ -172,7 +176,8 @@ Do NOT edit the blueprint, push changes, add notes, or take any implementation a
 
 ### Phase 2 — Brainstorm & clarify
 
-Ask **one question per message**, multiple-choice when possible.
+For customer work, use the grounded task to answer these questions and gather unresolved decisions for T1.
+For standalone work, ask **one question per message**, multiple-choice when possible.
 - **Existing scenario:** what changes and why, which modules, constraints, and which suggestions to include.
 - **New scenario:**
   - the trigger;
@@ -184,7 +189,7 @@ Ask **one question per message**, multiple-choice when possible.
   - failure requirements;
   - volume and frequency;
   - edge cases.
-- Keep asking until the picture is clear.
+- For standalone work, keep asking until the picture is clear.
 
 **Records involved?** If the scenario searches, updates, or links records in another system, use
 `make-fixer:make-build-verification` now: build the data contract from the real structure before you propose.
@@ -195,9 +200,15 @@ Ask **one question per message**, multiple-choice when possible.
   complexity and reliability. Use a single plan when the change is straightforward.
 - List the exact edits: modules added, removed or changed, and the fields touched.
 - Don't over-build: no handlers, aggregators, variables or data stores unless the design needs them.
-- Ask how to show the plan (below), then show it and get explicit approval.
+- For customer work, reuse the approved T1 for this design. If approval is pending, put the Make plan and
+  lookup contracts in the same T1 message. Use the recorded format preference. If there is none, use text
+  for a small change and a flow preview for a larger one. Use the preview builder and checker from
+  `make-fixer:make-build-verification` for a visual plan. Include the exact push target and intended effects
+  in T1. This is the plan review step when using that skill for customer work. T1 covers the format and plan
+  approval without a separate prompt. Return to T1 if the design changes.
+- For standalone work, ask how to show the plan (below), then show it and get explicit approval.
 
-#### Show the plan: visual or text
+#### Show the plan: visual or text (standalone)
 
 Once the approach is settled, and before you list the edits for approval, ask this for every scenario, new or
 existing. Ask it on its own, in the user's language:
@@ -226,9 +237,19 @@ in this conversation ("always show me the canvas", "just text"), and use that an
 1. Look up module types (`make-fixer apps` → `make-fixer modules`). Load
    [references/blueprint-format.md](references/blueprint-format.md) before writing JSON.
 2. Edit `blueprints/<id>.json`.
-3. Run `make-fixer validate -s <id>` and show the user the diff. Fix any issues and validate again.
+3. Run `make-fixer validate -s <id>` and review the diff. For standalone work, show the user the diff.
+   Fix any issues and validate again.
 
 ### Phase 5 — Push & verify
+
+For customer work, check the target's current state and compare the validated diff with T1 before pushing.
+If the target is verified as new or inactive and the diff matches the approved target and effects, run
+`make-fixer push -s <id> --yes` under T1. For an active target, an unverified state, or a diff that departs from T1,
+show the exact target and diff and get explicit push confirmation. After pushing, record the target and revision
+and show the diff in the push report. Hand the revision to automation-delivery for independent QA, using the
+Make end-to-end assertions where records are involved. Follow automation-delivery for activation and release.
+
+For standalone work:
 
 1. Get explicit confirmation, then run `make-fixer push -s <id> --yes`.
 2. Verify with a real run:
@@ -269,7 +290,7 @@ at run time.
 **Blueprint essentials:**
 - Never reuse module IDs; take the next free one. Error handlers need their own IDs.
 - Preserve `idSequence`.
-- Validate before every push and get confirmation before pushing.
+- Validate before every push and follow the approval rules in Phase 5.
 - Position new modules with `metadata.designer.x`/`y`, about 300 apart.
 - When you remove or move a module, fix every reference to it in the same edit.
 
@@ -292,5 +313,5 @@ at run time.
 
 ## Handling arguments
 
-`$ARGUMENTS` is a URL or ID → Phase 1. A description → Phase 2. Both → fetch first, then ask. Never skip
-straight to editing.
+`$ARGUMENTS` is a URL or ID → Phase 1. A description → Phase 2. Both → fetch first, then clarify in Phase 2.
+For customer work, start with automation-delivery. Never skip straight to editing.
