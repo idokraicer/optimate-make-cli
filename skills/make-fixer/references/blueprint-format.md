@@ -145,8 +145,11 @@ Always run `make-fixer modules http`.
 |---|---|---|
 | Runs | only the **first** matching branch | **all** matching routes |
 | Rejoin | yes, via `builtin:BasicMerge` | never |
-| Credits | free (operations only) | operations + credits |
-| Nesting | no router/if-else directly inside a branch | nests freely |
+| Credits | free (operations only) | free: the Router itself uses no operations or credits; modules on its routes do |
+| Nesting | an If-else may sit inside a branch only if every If-else, inner and outer, has its own Merge; no Router inside an If-else branch | nests freely |
+
+Make's help page states both a no-nesting hint and a "Nested If-else & Merge" section. Before nesting, check
+an exported blueprint from the target account that already contains a nested If-else.
 
 ```json
 {

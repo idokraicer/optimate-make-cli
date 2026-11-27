@@ -19,14 +19,15 @@ trigger applies, not up front.
 | Reading or editing blueprint JSON: modules, filters/operator codes, router, if-else + merge, iterator, aggregator, variables, scenario settings | [references/blueprint-format.md](references/blueprint-format.md) |
 | Writing `{{…}}` mappings, `ifempty` fallbacks, or a mapped field came back empty | [references/mapping.md](references/mapping.md) |
 | Any inline function, date token, or "does this function exist?" | [FUNCTIONS_REFERENCE.md](FUNCTIONS_REFERENCE.md) |
-| About to propose a Code module, or a transform looks "impossible" | [references/native-first.md](references/native-first.md) |
+| Writing a Fireberry query (Query v3) or choosing monday.com GraphQL; proposing Code; a transform looks "impossible" | [references/native-first.md](references/native-first.md) |
 | Adding/reviewing error handlers, retries, 429s, webhook error responses | [references/error-handling.md](references/error-handling.md) |
 | A run failed, "what's broken?", execution history, per-module bundles, a webhook receives nothing | [references/debugging.md](references/debugging.md) |
 | Subscenarios / on-demand, data stores and dedup, bulk or long runs, production settings | [references/architecture.md](references/architecture.md) |
 | AI provider modules, Make AI Tools, the AI Agent module and its tools | [references/ai.md](references/ai.md) |
-| Google Sheets, Gmail, date-math configuration | [references/app-gotchas.md](references/app-gotchas.md) |
+| Google Sheets, Gmail, Fireberry (`powerlink:*`) dropdowns, date-math configuration | [references/app-gotchas.md](references/app-gotchas.md) |
 | Naming, safe testing, pre-activation cost checklist, versioning | [references/conventions.md](references/conventions.md) |
 | monday.com modules or GraphQL in Make | the `monday-make-modules` skill |
+| Scalla CRM business processes, HTTP actions, fields, relationships or API failures | also use `scalla:scalla-api` when installed; it supplies the account-specific API contract while this skill owns Make construction. If unavailable, identify the missing expertise and verify Scalla contracts from sources before building. |
 
 ## Installation
 
@@ -147,8 +148,7 @@ eu1/eu2/us1/us2 and caches the zone in `~/.make-fixer/.zones.json`. With no URL 
 Do NOT edit the blueprint, push changes, add notes, or take any implementation action until the user has approved the plan of changes. For customer work, use the approved automation-delivery T1 plan. For standalone work, use the visual flow preview or text plan the user chose in Phase 3. When the scenario finds, updates, or links records, no data-contract row from `make-fixer:make-build-verification` may still be an open assumption.
 </HARD-GATE>
 
-For customer work, start with `optimate-project-template:automation-delivery`. It grounds the work in the
-customer task and owns design approval, independent QA, activation and hand-off.
+**Customer task?** When building, changing or testing a scenario for a customer task, invoke `optimate-project-template:automation-delivery` first. It grounds the work in the monday task, its updates and replies, the spec and meetings, and owns design approval, independent QA, test records, activation and hand-off.
 
 **Mode:**
 - An existing scenario (ID/URL) → Phase 1.
@@ -259,6 +259,7 @@ For standalone work:
      request yourself;
    - then check `make-fixer executions`.
 
+
 ## Hard rules
 
 <HARD-RULE>
@@ -284,7 +285,22 @@ at run time.
 </HARD-RULE>
 
 <HARD-RULE>
-**Native first.** A Code module is a last resort — read [references/native-first.md](references/native-first.md) before proposing one.
+**Fireberry queries use Query v3.** Fireberry is retiring the legacy query endpoint (`POST /api/query`,
+announced November 2026; it stops working around January 2027). Any Fireberry search, list or lookup by
+field values in Make uses Query v3 (`POST /api/v3/query`). Never build a new legacy query. When a scenario
+you touch still uses one (an HTTP call to `/api/query`, or a `powerlink:*` search whose query field uses
+the legacy string syntax), flag it to the user as a migration item. Use `powerlink:*` modules for
+get-by-ID, create, update and delete. Read [references/native-first.md](references/native-first.md) for
+the readable Query v3 format.
+
+**monday.com: standard connector modules first.** Use standard monday Make connector operations and
+visible filters/mappings when they meet the requirements. Do not choose custom monday GraphQL (including a
+connector GraphQL module) merely to save operations or combine steps. Use it only when the user explicitly
+requests it, or a verified, critical requirement cannot be met with standard operations. Identify that
+requirement and the verified connector limitation in the proposed plan. This rule also applies when
+improving existing scenarios; propose any replacement through the normal approval gates.
+
+**Code last.** A Code module is a last resort — read the same reference before proposing one.
 </HARD-RULE>
 
 **Blueprint essentials:**
@@ -302,10 +318,13 @@ at run time.
 
 ## Cost principles
 
-- Every module run costs operations and credits, so use the minimum number of modules.
+- Most module runs cost operations and credits, so minimize executed modules within the connector rules above.
+  Operation savings alone do not justify custom monday GraphQL.
+- A Router costs nothing itself (no operations, no credits); only the modules on its routes do.
 - Free of credits: if-else, Merge, "Name a run" (`scenario-service:NameExecution`), and `CallSubscenario`
   calls.
-- Prefer if-else over a router when only one route should run.
+- Prefer if-else over a router when only one route should run or the branches must rejoin; choose by
+  behavior, not cost.
 - Prefer one multi-variable `util:SetVariables` over several single-variable modules.
 - Map `{{setId.name}}` directly instead of adding a Get Variable module.
 - Don't add an Iterator after search/list modules; they already iterate.
